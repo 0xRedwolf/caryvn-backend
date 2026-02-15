@@ -1,0 +1,120 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>New Ticket Reply</title>
+    <style>
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #0f172a;
+        margin: 0;
+        padding: 20px;
+      }
+      .container {
+        max-width: 520px;
+        margin: 0 auto;
+        background: #1e293b;
+        border-radius: 16px;
+        overflow: hidden;
+      }
+      .header {
+        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
+        padding: 32px;
+        text-align: center;
+      }
+      .header h1 {
+        color: #fff;
+        font-size: 22px;
+        margin: 0 0 4px;
+      }
+      .header p {
+        color: rgba(255, 255, 255, 0.8);
+        font-size: 14px;
+        margin: 0;
+      }
+      .body {
+        padding: 32px;
+      }
+      .greeting {
+        color: #e2e8f0;
+        font-size: 16px;
+        margin: 0 0 16px;
+      }
+      .ticket-card {
+        background: #0f172a;
+        border-radius: 12px;
+        padding: 20px;
+        margin: 16px 0;
+      }
+      .ticket-subject {
+        color: #e2e8f0;
+        font-size: 15px;
+        font-weight: 600;
+        margin: 0 0 8px;
+      }
+      .reply-box {
+        background: rgba(37, 99, 235, 0.1);
+        border-left: 3px solid #2563eb;
+        border-radius: 0 8px 8px 0;
+        padding: 16px;
+        margin: 16px 0;
+      }
+      .reply-text {
+        color: #e2e8f0;
+        font-size: 14px;
+        line-height: 1.6;
+        margin: 0;
+      }
+      .reply-meta {
+        color: #64748b;
+        font-size: 12px;
+        margin-top: 8px;
+      }
+      .footer {
+        padding: 24px 32px;
+        text-align: center;
+        border-top: 1px solid rgba(255, 255, 255, 0.05);
+      }
+      .footer p {
+        color: #64748b;
+        font-size: 12px;
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>New Ticket Reply</h1>
+        <p>{{ brand_name }}</p>
+      </div>
+      <div class="body">
+        <p class="greeting">
+          Hi {{ recipient.first_name|default:recipient.email }},
+        </p>
+        <p style="color: #94a3b8; font-size: 14px">
+          There&rsquo;s a new reply on your support ticket.
+        </p>
+
+        <div class="ticket-card">
+          <p class="ticket-subject">{{ ticket.subject }}</p>
+          <div class="reply-box">
+            <p class="reply-text">{{ reply.message|truncatechars:500 }}</p>
+            <p class="reply-meta">
+              {{ reply.user.first_name|default:"Support" }} &middot; just now
+            </p>
+          </div>
+        </div>
+
+        <p style="color: #94a3b8; font-size: 13px">
+          Log in to your dashboard to view the full conversation and reply.
+        </p>
+      </div>
+      <div class="footer">
+        <p>&copy; {{ brand_name }}. All rights reserved.</p>
+      </div>
+    </div>
+  </body>
+</html>
