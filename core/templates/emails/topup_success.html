@@ -1,0 +1,117 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Top-Up Successful</title>
+    <style>
+      body {
+        font-family:
+          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+        background: #0f172a;
+        margin: 0;
+        padding: 20px;
+      }
+      .container {
+        max-width: 520px;
+        margin: 0 auto;
+        background: #1e293b;
+        border-radius: 16px;
+        overflow: hidden;
+      }
+      .header {
+        background: linear-gradient(135deg, #059669 0%, #047857 100%);
+        padding: 32px;
+        text-align: center;
+      }
+      .header h1 {
+        color: #fff;
+        font-size: 22px;
+        margin: 0 0 4px;
+      }
+      .header p {
+        color: rgba(255, 255, 255, 0.8);
+        font-size: 14px;
+        margin: 0;
+      }
+      .body {
+        padding: 32px;
+      }
+      .greeting {
+        color: #e2e8f0;
+        font-size: 16px;
+        margin: 0 0 16px;
+      }
+      .amount-card {
+        background: #0f172a;
+        border-radius: 12px;
+        padding: 24px;
+        margin: 20px 0;
+        text-align: center;
+      }
+      .amount {
+        color: #10b981;
+        font-size: 32px;
+        font-weight: 700;
+        margin: 0;
+      }
+      .balance-row {
+        display: flex;
+        justify-content: center;
+        gap: 8px;
+        margin-top: 12px;
+      }
+      .balance-label {
+        color: #94a3b8;
+        font-size: 13px;
+      }
+      .balance-value {
+        color: #e2e8f0;
+        font-size: 13px;
+        font-weight: 600;
+      }
+      .footer {
+        padding: 24px 32px;
+        text-align: center;
+        border-top: 1px solid rgba(255, 255, 255, 0.05);
+      }
+      .footer p {
+        color: #64748b;
+        font-size: 12px;
+        margin: 0;
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="header">
+        <h1>Top-Up Successful ✓</h1>
+        <p>{{ brand_name }}</p>
+      </div>
+      <div class="body">
+        <p class="greeting">Hi {{ user.first_name|default:user.email }},</p>
+        <p style="color: #94a3b8; font-size: 14px">
+          Your wallet has been credited successfully.
+        </p>
+
+        <div class="amount-card">
+          <p style="color: #94a3b8; font-size: 13px; margin: 0 0 8px">
+            Amount Added
+          </p>
+          <p class="amount">+₦{{ amount }}</p>
+          <div class="balance-row">
+            <span class="balance-label">New Balance:</span>
+            <span class="balance-value">₦{{ new_balance }}</span>
+          </div>
+        </div>
+
+        <p style="color: #94a3b8; font-size: 13px">
+          You can now use your balance to place orders on the platform.
+        </p>
+      </div>
+      <div class="footer">
+        <p>&copy; {{ brand_name }}. All rights reserved.</p>
+      </div>
+    </div>
+  </body>
+</html>
