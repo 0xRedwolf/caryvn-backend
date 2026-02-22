@@ -151,6 +151,9 @@ SIMPLE_JWT = {
 CORS_ALLOWED_ORIGINS = env.list('CORS_ALLOWED_ORIGINS')
 CORS_ALLOW_CREDENTIALS = True
 
+# Frontend URL for links in emails
+FRONTEND_URL = env('FRONTEND_URL', default='http://localhost:3000')
+
 # SMM Provider Configuration
 SMM_PROVIDER_URL = env('SMM_PROVIDER_URL', default='')
 SMM_PROVIDER_KEY = env('SMM_PROVIDER_KEY', default='')

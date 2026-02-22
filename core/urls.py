@@ -24,6 +24,8 @@ from .views.payment_views import (
     InitiateTopupView, VerifyTopupView, SquadWebhookView,
 )
 from .views.analytics_views import AdminAnalyticsView
+from .views.activity_views import LogActivityView, AdminUserActivityView
+from .views.auth_views import PasswordResetRequestView, PasswordResetConfirmView
 
 urlpatterns = [
     # Auth endpoints
@@ -33,6 +35,8 @@ urlpatterns = [
     path('auth/profile/', UserProfileView.as_view(), name='profile'),
     path('auth/change-password/', ChangePasswordView.as_view(), name='change-password'),
     path('auth/api-key/', GenerateAPIKeyView.as_view(), name='generate-api-key'),
+    path('auth/password-reset/', PasswordResetRequestView.as_view(), name='password-reset-request'),
+    path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
     
     # Wallet endpoints
     path('wallet/', WalletView.as_view(), name='wallet'),
@@ -73,5 +77,9 @@ urlpatterns = [
     path('admin/orders/check-status/', AdminOrderCheckStatusView.as_view(), name='admin-order-check-status'),
     path('admin/users/<uuid:user_id>/toggle-active/', AdminUserToggleActiveView.as_view(), name='admin-user-toggle-active'),
     path('admin/users/<uuid:user_id>/transactions/', AdminUserTransactionsView.as_view(), name='admin-user-transactions'),
+    path('admin/users/<uuid:user_id>/activity/', AdminUserActivityView.as_view(), name='admin-user-activity'),
+    
+    # Activity tracking
+    path('activity/', LogActivityView.as_view(), name='log-activity'),
 ]
 
