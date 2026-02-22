@@ -149,6 +149,8 @@ class AdminAnalyticsView(APIView):
         revenue_trend = 0
         if revenue_prev_7d > 0:
             revenue_trend = round(float((revenue_7d - revenue_prev_7d) / revenue_prev_7d * 100), 1)
+        elif revenue_7d > 0:
+            revenue_trend = 100.0  # New revenue with no previous baseline
 
         # Active orders (processing or in-progress)
         active_orders = all_orders.filter(

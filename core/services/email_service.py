@@ -17,6 +17,15 @@ class EmailService:
 
     def __init__(self):
         self.from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'Caryvn <noreply@caryvn.com>')
+        self.frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000').rstrip('/')
+
+    def _get_base_context(self):
+        """Standard context for all emails."""
+        return {
+            'brand_name': 'Caryvn',
+            'logo_url': f"{self.frontend_url}/logo-full.png",
+            'frontend_url': self.frontend_url,
+        }
 
     def _send(self, subject, template_name, context, recipient_email):
         """Send an email using an HTML template. Never raises — logs errors instead."""
@@ -41,11 +50,11 @@ class EmailService:
 
     def send_order_confirmation(self, user, order):
         """Send order confirmation email after successful order placement."""
-        context = {
+        context = self._get_base_context()
+        context.update({
             'user': user,
             'order': order,
-            'brand_name': 'Caryvn',
-        }
+        })
         self._send(
             subject=f'Order Confirmed — #{str(order.id)[:8]}',
             template_name='order_confirmation.html',
@@ -55,12 +64,12 @@ class EmailService:
 
     def send_topup_success(self, user, amount, new_balance):
         """Send wallet top-up success email."""
-        context = {
+        context = self._get_base_context()
+        context.update({
             'user': user,
             'amount': f'{Decimal(str(amount)):,.2f}',
             'new_balance': f'{Decimal(str(new_balance)):,.2f}',
-            'brand_name': 'Caryvn',
-        }
+        })
         self._send(
             subject=f'Wallet Top-Up Successful — ₦{Decimal(str(amount)):,.2f}',
             template_name='topup_success.html',
@@ -70,17 +79,31 @@ class EmailService:
 
     def send_ticket_reply(self, ticket, reply, recipient_user):
         """Send notification when a ticket receives a reply."""
-        context = {
+        context = self._get_base_context()
+        context.update({
             'recipient': recipient_user,
             'ticket': ticket,
             'reply': reply,
-            'brand_name': 'Caryvn',
-        }
+        })
         self._send(
             subject=f'New Reply on Ticket — {ticket.subject}',
             template_name='ticket_reply.html',
             context=context,
             recipient_email=recipient_user.email,
+        )
+
+    def send_password_reset(self, user, reset_url):
+        """Send password reset link email."""
+        context = self._get_base_context()
+        context.update({
+            'user': user,
+            'reset_url': reset_url,
+        })
+        self._send(
+            subject='Reset Your Password — Caryvn',
+            template_name='password_reset.html',
+            context=context,
+            recipient_email=user.email,
         )
 
 

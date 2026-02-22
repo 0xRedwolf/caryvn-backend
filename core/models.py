@@ -452,6 +452,36 @@ class APILog(models.Model):
         return f"{self.action} - {self.created_at}"
 
 
+class UserActivity(models.Model):
+    """Track user page visits and actions for admin monitoring."""
+    
+    class Action(models.TextChoices):
+        PAGE_VISIT = 'page_visit', 'Page Visit'
+        CLICK = 'click', 'Click'
+        ORDER = 'order', 'Order Placed'
+        LOGIN = 'login', 'Login'
+    
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='activities')
+    action = models.CharField(max_length=20, choices=Action.choices, default=Action.PAGE_VISIT)
+    page = models.CharField(max_length=500)  # URL path e.g. /dashboard
+    metadata = models.JSONField(default=dict, blank=True)  # Extra context
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=500, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'User Activity'
+        verbose_name_plural = 'User Activities'
+        indexes = [
+            models.Index(fields=['user', '-created_at']),
+        ]
+    
+    def __str__(self):
+        return f"{self.user.email} - {self.action} - {self.page}"
+
+
 # Signal to create wallet when user is created
 from django.db.models.signals import post_save
 from django.dispatch import receiver
