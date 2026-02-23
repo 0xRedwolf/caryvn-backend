@@ -68,10 +68,19 @@ class LoginView(APIView):
     def post(self, request):
         serializer = LoginSerializer(data=request.data)
         if serializer.is_valid():
-            user = authenticate(
-                email=serializer.validated_data['email'],
-                password=serializer.validated_data['password']
-            )
+            login_data = serializer.validated_data['login']
+            password = serializer.validated_data['password']
+            
+            # Try to authenticate with email first, then username
+            user = authenticate(email=login_data, password=password)
+            if not user:
+                # Fallback to username if email authentication fails
+                try:
+                    user_obj = User.objects.get(username__iexact=login_data)
+                    user = authenticate(email=user_obj.email, password=password)
+                except User.DoesNotExist:
+                    user = None
+
             if user and user.is_active:
                 refresh = RefreshToken.for_user(user)
                 user.last_login = timezone.now()
@@ -88,6 +97,7 @@ class LoginView(APIView):
                 status=status.HTTP_401_UNAUTHORIZED
             )
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
 
 
 class LogoutView(APIView):
