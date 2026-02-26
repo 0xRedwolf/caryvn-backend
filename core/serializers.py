@@ -96,10 +96,44 @@ class ServiceSerializer(serializers.ModelSerializer):
 
 class ServiceListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for service lists."""
+    avg_completion_time = serializers.SerializerMethodField()
+
     class Meta:
         model = Service
         fields = ('id', 'provider_id', 'name', 'category_name', 'user_rate',
-                  'min_quantity', 'max_quantity', 'has_refill', 'has_cancel', 'is_featured')
+                  'min_quantity', 'max_quantity', 'has_refill', 'has_cancel',
+                  'is_featured', 'is_active', 'avg_completion_time')
+
+    def get_avg_completion_time(self, obj):
+        """Calculate average completion time from the last 20 completed orders."""
+        from .models import Order
+        recent = (
+            Order.objects
+            .filter(service=obj, status='completed', completed_at__isnull=False)
+            .order_by('-completed_at')
+            .values_list('created_at', 'completed_at')[:20]
+        )
+        if not recent:
+            return None
+
+        total_seconds = sum(
+            (completed - created).total_seconds()
+            for created, completed in recent
+        )
+        avg_seconds = total_seconds / len(recent)
+
+        # Human-readable format
+        if avg_seconds < 60:
+            return "~less than a minute"
+        elif avg_seconds < 3600:
+            mins = round(avg_seconds / 60)
+            return f"~{mins} minute{'s' if mins != 1 else ''}"
+        elif avg_seconds < 86400:
+            hours = round(avg_seconds / 3600)
+            return f"~{hours} hour{'s' if hours != 1 else ''}"
+        else:
+            days = round(avg_seconds / 86400)
+            return f"~{days} day{'s' if days != 1 else ''}"
 
 
 # === Order Serializers ===

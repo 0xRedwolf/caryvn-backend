@@ -15,7 +15,7 @@ from django.utils import timezone
 
 from ..models import (
     Wallet, Transaction, Service, Order, Ticket, TicketReply, 
-    MarkupRule, APILog
+    MarkupRule, APILog, SiteSettings
 )
 from ..serializers import (
     RegisterSerializer, LoginSerializer, UserSerializer, UserProfileUpdateSerializer,
@@ -176,7 +176,7 @@ class TransactionListView(APIView):
     """List user transactions with pagination."""
     
     def get(self, request):
-        transactions = request.user.wallet.transactions.all()
+        transactions = request.user.wallet.transactions.filter(hidden_by_user=False)
         # Simple pagination
         limit = int(request.query_params.get('limit', 20))
         offset = int(request.query_params.get('offset', 0))
@@ -188,6 +188,19 @@ class TransactionListView(APIView):
         })
 
 
+class HideTransactionView(APIView):
+    """Hide a transaction from user's view (soft delete)."""
+    
+    def post(self, request, transaction_id):
+        try:
+            transaction = request.user.wallet.transactions.get(id=transaction_id)
+        except:
+            return Response({'error': 'Transaction not found'}, status=404)
+        transaction.hidden_by_user = True
+        transaction.save()
+        return Response({'message': 'Transaction hidden'})
+
+
 # === Service Views ===
 
 class ServiceListView(APIView):
@@ -196,7 +209,14 @@ class ServiceListView(APIView):
     
     def get(self, request):
         # Get services from database (synced via admin endpoint)
-        services = Service.objects.filter(is_active=True)
+        services = Service.objects.all()
+        
+        # Only show active services to non-admin users
+        include_inactive = request.query_params.get('include_inactive', 'false').lower() == 'true'
+        settings = SiteSettings.load()
+        if not (include_inactive and request.user.is_authenticated and request.user.is_staff):
+            if not settings.show_inactive_services:
+                services = services.filter(is_active=True)
         
         # Filters
         platform = request.query_params.get('platform')
@@ -329,7 +349,7 @@ class OrderListView(APIView):
     """List user orders."""
     
     def get(self, request):
-        orders = request.user.orders.all()
+        orders = request.user.orders.filter(hidden_by_user=False)
         
         # Filters
         status_filter = request.query_params.get('status')
@@ -344,6 +364,19 @@ class OrderListView(APIView):
             'orders': OrderSerializer(orders[offset:offset+limit], many=True).data,
             'total': orders.count()
         })
+
+
+class HideOrderView(APIView):
+    """Hide an order from user's view (soft delete)."""
+    
+    def post(self, request, order_id):
+        try:
+            order = request.user.orders.get(id=order_id)
+        except:
+            return Response({'error': 'Order not found'}, status=404)
+        order.hidden_by_user = True
+        order.save()
+        return Response({'message': 'Order hidden'})
 
 
 class OrderDetailView(APIView):
@@ -840,3 +873,94 @@ class AdminUserTransactionsView(APIView):
             'transactions': TransactionSerializer(transactions, many=True).data,
         })
 
+
+class AdminDeleteLogView(APIView):
+    """Delete an individual API log entry."""
+    permission_classes = [IsAdminUser]
+
+    def delete(self, request, log_id):
+        try:
+            log = APILog.objects.get(id=log_id)
+            log.delete()
+            return Response({'message': 'Log deleted'}, status=status.HTTP_200_OK)
+        except APILog.DoesNotExist:
+            return Response({'error': 'Log not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class AdminDeleteOrderView(APIView):
+    """Permanently delete an order."""
+    permission_classes = [IsAdminUser]
+
+    def delete(self, request, order_id):
+        try:
+            order = Order.objects.get(id=order_id)
+            order.delete()
+            return Response({'message': 'Order deleted'}, status=status.HTTP_200_OK)
+        except Order.DoesNotExist:
+            return Response({'error': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class AdminDeleteUserView(APIView):
+    """Permanently delete a user and all related data."""
+    permission_classes = [IsAdminUser]
+
+    def delete(self, request, user_id):
+        try:
+            user = User.objects.get(id=user_id)
+            if user == request.user:
+                return Response(
+                    {'error': 'Cannot delete yourself'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if user.is_superuser:
+                return Response(
+                    {'error': 'Cannot delete a superuser'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            email = user.email
+            user.delete()
+            return Response({'message': f'User {email} permanently deleted'})
+        except User.DoesNotExist:
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class AdminToggleServiceActiveView(APIView):
+    """Toggle a service's is_active status."""
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, service_id):
+        try:
+            service = Service.objects.get(provider_id=service_id)
+            service.is_active = not service.is_active
+            service.save(update_fields=['is_active'])
+            return Response({
+                'message': f'Service {"activated" if service.is_active else "deactivated"}',
+                'is_active': service.is_active,
+            })
+        except Service.DoesNotExist:
+            return Response({'error': 'Service not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class AdminGetSiteSettingsView(APIView):
+    """Get site-wide settings."""
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        settings = SiteSettings.load()
+        return Response({
+            'show_inactive_services': settings.show_inactive_services,
+        })
+
+
+class AdminToggleShowInactiveView(APIView):
+    """Toggle the show_inactive_services site setting."""
+    permission_classes = [IsAdminUser]
+
+    def post(self, request):
+        settings = SiteSettings.load()
+        settings.show_inactive_services = not settings.show_inactive_services
+        settings.save()
+        return Response({
+            'show_inactive_services': settings.show_inactive_services,
+            'message': f'Inactive services are now {"visible" if settings.show_inactive_services else "hidden"} to users',
+        })

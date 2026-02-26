@@ -7,11 +7,11 @@ from .views import (
     RegisterView, LoginView, LogoutView, UserProfileView,
     ChangePasswordView, GenerateAPIKeyView,
     # Wallet
-    WalletView, TransactionListView,
+    WalletView, TransactionListView, HideTransactionView,
     # Services
     ServiceListView, ServiceDetailView,
     # Orders
-    OrderCreateView, OrderListView, OrderDetailView,
+    OrderCreateView, OrderListView, OrderDetailView, HideOrderView,
     # Tickets
     TicketListCreateView, TicketDetailView,
     # Admin
@@ -19,6 +19,9 @@ from .views import (
     AdminMarkupRuleView, AdminAPILogView, AdminSyncServicesView,
     AdminOrderCancelRefundView, AdminOrderRetryView, AdminOrderCheckStatusView,
     AdminUserToggleActiveView, AdminUserTransactionsView, AdminSyncOrdersView,
+    AdminDeleteLogView, AdminDeleteOrderView, AdminDeleteUserView,
+    AdminToggleServiceActiveView,
+    AdminGetSiteSettingsView, AdminToggleShowInactiveView,
 )
 from .views.payment_views import (
     InitiateTopupView, VerifyTopupView, SquadWebhookView,
@@ -41,6 +44,7 @@ urlpatterns = [
     # Wallet endpoints
     path('wallet/', WalletView.as_view(), name='wallet'),
     path('wallet/transactions/', TransactionListView.as_view(), name='transactions'),
+    path('wallet/transactions/<uuid:transaction_id>/hide/', HideTransactionView.as_view(), name='hide-transaction'),
     path('wallet/topup/initiate/', InitiateTopupView.as_view(), name='topup-initiate'),
     path('wallet/topup/verify/', VerifyTopupView.as_view(), name='topup-verify'),
     
@@ -55,6 +59,7 @@ urlpatterns = [
     path('orders/', OrderListView.as_view(), name='orders'),
     path('orders/create/', OrderCreateView.as_view(), name='order-create'),
     path('orders/<uuid:order_id>/', OrderDetailView.as_view(), name='order-detail'),
+    path('orders/<uuid:order_id>/hide/', HideOrderView.as_view(), name='hide-order'),
     
     # Ticket endpoints
     path('tickets/', TicketListCreateView.as_view(), name='tickets'),
@@ -78,6 +83,12 @@ urlpatterns = [
     path('admin/users/<uuid:user_id>/toggle-active/', AdminUserToggleActiveView.as_view(), name='admin-user-toggle-active'),
     path('admin/users/<uuid:user_id>/transactions/', AdminUserTransactionsView.as_view(), name='admin-user-transactions'),
     path('admin/users/<uuid:user_id>/activity/', AdminUserActivityView.as_view(), name='admin-user-activity'),
+    path('admin/users/<uuid:user_id>/delete/', AdminDeleteUserView.as_view(), name='admin-user-delete'),
+    path('admin/logs/<int:log_id>/delete/', AdminDeleteLogView.as_view(), name='admin-log-delete'),
+    path('admin/orders/<uuid:order_id>/delete/', AdminDeleteOrderView.as_view(), name='admin-order-delete'),
+    path('admin/services/<int:service_id>/toggle-active/', AdminToggleServiceActiveView.as_view(), name='admin-service-toggle-active'),
+    path('admin/settings/', AdminGetSiteSettingsView.as_view(), name='admin-site-settings'),
+    path('admin/settings/toggle-show-inactive/', AdminToggleShowInactiveView.as_view(), name='admin-toggle-show-inactive'),
     
     # Activity tracking
     path('activity/', LogActivityView.as_view(), name='log-activity'),
