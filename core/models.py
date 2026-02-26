@@ -207,6 +207,7 @@ class Transaction(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.SUCCESS)
     payment_reference = models.CharField(max_length=100, blank=True, null=True, unique=True)
     payment_gateway = models.CharField(max_length=20, blank=True)  # 'squad', etc.
+    hidden_by_user = models.BooleanField(default=False)  # Soft-delete: hidden from user's view
     created_at = models.DateTimeField(auto_now_add=True)
     
     class Meta:
@@ -355,6 +356,7 @@ class Order(models.Model):
     status_updated_at = models.DateTimeField(auto_now=True)
     
     # Timestamps
+    hidden_by_user = models.BooleanField(default=False)  # Soft-delete: hidden from user's view
     created_at = models.DateTimeField(auto_now_add=True)
     completed_at = models.DateTimeField(null=True, blank=True)
     
@@ -482,6 +484,30 @@ class UserActivity(models.Model):
     
     def __str__(self):
         return f"{self.user.email} - {self.action} - {self.page}"
+
+class SiteSettings(models.Model):
+    """Singleton model for site-wide settings."""
+    show_inactive_services = models.BooleanField(
+        default=False,
+        help_text='When enabled, inactive services are also visible to users'
+    )
+    
+    class Meta:
+        verbose_name = 'Site Settings'
+        verbose_name_plural = 'Site Settings'
+    
+    def __str__(self):
+        return 'Site Settings'
+    
+    @classmethod
+    def load(cls):
+        """Get or create the singleton settings instance."""
+        obj, _ = cls.objects.get_or_create(pk=1)
+        return obj
+    
+    def save(self, *args, **kwargs):
+        self.pk = 1  # Enforce singleton
+        super().save(*args, **kwargs)
 
 
 # Signal to create wallet when user is created

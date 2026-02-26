@@ -110,12 +110,14 @@ class PricingService:
             Number of services synced
         """
         count = 0
+        synced_provider_ids = []
         
         for svc in services_data:
             provider_id = svc.get('service')
             if not provider_id:
                 continue
             
+            synced_provider_ids.append(provider_id)
             provider_rate = Decimal(str(svc.get('rate', '0')))
             category_name = svc.get('category', '')
             
@@ -126,22 +128,34 @@ class PricingService:
             )
             
             # Update or create service
+            defaults = {
+                'name': svc.get('name', ''),
+                'category_name': category_name,
+                'provider_rate': provider_rate,
+                'user_rate': user_rate,
+                'min_quantity': int(svc.get('min', 10)),
+                'max_quantity': int(svc.get('max', 10000)),
+                'service_type': svc.get('type', 'Default'),
+                'has_refill': svc.get('refill', False),
+                'has_cancel': svc.get('cancel', False),
+                'is_active': True,  # Provider returned it, so it's available
+            }
+            
             Service.objects.update_or_create(
                 provider_id=provider_id,
-                defaults={
-                    'name': svc.get('name', ''),
-                    'category_name': category_name,
-                    'provider_rate': provider_rate,
-                    'user_rate': user_rate,
-                    'min_quantity': int(svc.get('min', 10)),
-                    'max_quantity': int(svc.get('max', 10000)),
-                    'service_type': svc.get('type', 'Default'),
-                    'has_refill': svc.get('refill', False),
-                    'has_cancel': svc.get('cancel', False),
-                    'is_active': True
-                }
+                defaults=defaults
             )
+            
             count += 1
+        
+        # Auto-deactivate services the provider no longer offers
+        if synced_provider_ids:
+            stale = Service.objects.exclude(provider_id__in=synced_provider_ids).filter(is_active=True)
+            stale_count = stale.count()
+            stale.update(is_active=False)
+            if stale_count > 0:
+                import logging
+                logging.getLogger(__name__).info(f'Auto-deactivated {stale_count} services no longer offered by provider')
         
         return count
     
