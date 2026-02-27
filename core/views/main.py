@@ -10,8 +10,10 @@ from rest_framework.throttling import ScopedRateThrottle
 from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.views import TokenObtainPairView
 from django.contrib.auth import authenticate, get_user_model
-from django.db import transaction
+from django.db import transaction, models
 from django.utils import timezone
+from django.utils.decorators import method_decorator
+from django.views.decorators.csrf import csrf_exempt
 
 from ..models import (
     Wallet, Transaction, Service, Order, Ticket, TicketReply, 
@@ -167,7 +169,7 @@ class WalletView(APIView):
         return Response({
             'wallet': WalletSerializer(wallet).data,
             'recent_transactions': TransactionSerializer(
-                wallet.transactions.all()[:10], many=True
+                wallet.transactions.all()[:10], many=True, context={'request': request}
             ).data
         })
 
@@ -182,7 +184,7 @@ class TransactionListView(APIView):
         offset = int(request.query_params.get('offset', 0))
         return Response({
             'transactions': TransactionSerializer(
-                transactions[offset:offset+limit], many=True
+                transactions[offset:offset+limit], many=True, context={'request': request}
             ).data,
             'total': transactions.count()
         })
@@ -261,6 +263,7 @@ class OrderCreateView(APIView):
     
     @transaction.atomic
     def post(self, request):
+        from django.core.cache import cache
         serializer = OrderCreateSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -270,11 +273,38 @@ class OrderCreateView(APIView):
         link = serializer.validated_data['link']
         comments = request.data.get('comments', '').strip() or None
         
+        # --- PREVENT DUPLICATE PROCESSING / SPAM ---
+        # 1) Concurrency Lock (Cache Check)
+        lock_key = f"order_lock_{request.user.id}_{service.id}_{link}"
+        if not cache.add(lock_key, 'locked', timeout=60):
+            return Response(
+                {'error': 'You are clicking too fast. Please wait a moment.'},
+                status=status.HTTP_429_TOO_MANY_REQUESTS
+            )
+
+        # 2) DB Active Order Duplicate Check
+        active_statuses = [Order.Status.PENDING, Order.Status.PROCESSING, Order.Status.IN_PROGRESS]
+        has_active_order = Order.objects.filter(
+            user=request.user,
+            service=service,
+            link=link,
+            status__in=active_statuses
+        ).exists()
+
+        if has_active_order:
+            # Drop the lock instantly if they hit the database duplicate rule so they don't get 'clicking too fast' on a different subsequent request
+            cache.delete(lock_key)
+            return Response(
+                {'error': 'You already have an active order for this exact link. Please wait until it completes to avoid sending duplicates to the provider.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        # --- END OF DUPLICATE CHECKS ---
+        
         # Calculate charge
         charge = service.calculate_price(quantity)
         
-        # Check balance
-        wallet = request.user.wallet
+        # Check balance (fresh read from DB, not cached)
+        wallet = Wallet.objects.get(user=request.user)
         if wallet.balance < charge:
             return Response(
                 {'error': 'Insufficient balance', 'required': str(charge), 'available': str(wallet.balance)},
@@ -297,7 +327,7 @@ class OrderCreateView(APIView):
         order.calculate_profit()
         order.save()
         
-        # Deduct from wallet
+        # Deduct from wallet (uses select_for_update internally for safety)
         wallet.charge(charge, f'Order #{str(order.id)[:8]} - {service.name}')
         
         # Submit to provider
@@ -436,6 +466,77 @@ class OrderDetailView(APIView):
         order.save()
 
 
+        order.save()
+
+
+class OrderRefillView(APIView):
+    """User endpoint to request a refill for an eligible order."""
+    
+    def post(self, request, order_id):
+        try:
+            order = request.user.orders.get(id=order_id)
+        except Order.DoesNotExist:
+            return Response({'error': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+        if not order.service or not order.service.has_refill:
+            return Response({'error': 'This service does not support refills.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        if order.status != Order.Status.COMPLETED:
+            return Response({'error': 'Order must be completed to request a refill.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            result = smm_provider.create_refill(
+                order_id=order.provider_order_id,
+                user=request.user,
+                order=order
+            )
+            
+            if 'refill' in result:
+                return Response({'message': 'Refill requested successfully.', 'refill_id': result['refill']})
+            elif 'error' in result:
+                return Response({'error': str(result['error'])}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                return Response({'error': 'Failed to request refill from provider.'}, status=status.HTTP_400_BAD_REQUEST)
+                
+        except SMMProviderError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class OrderCheckProviderBalanceView(APIView):
+    """Silently check if the provider has enough balance to fulfill an order."""
+    
+    def post(self, request):
+        from decimal import Decimal
+        try:
+            service_id = request.data.get('service_id')
+            quantity = request.data.get('quantity')
+            
+            if not service_id or quantity is None:
+                return Response({'error': 'Missing service_id or quantity'}, status=status.HTTP_400_BAD_REQUEST)
+                
+            try:
+                service = Service.objects.get(provider_id=service_id, is_active=True)
+            except Service.DoesNotExist:
+                return Response({'error': 'Service not found or inactive'}, status=status.HTTP_404_NOT_FOUND)
+                
+            qty = Decimal(str(quantity))
+            provider_cost = (qty / Decimal('1000')) * service.provider_rate
+            
+            balance_data = smm_provider.get_balance()
+            if 'error' in balance_data and balance_data['error'] != 'Unknown error':
+                return Response({'can_fulfill': False, 'message': 'Provider API Error'})
+                
+            available_balance = Decimal(str(balance_data.get('balance', '0')))
+            
+            can_fulfill = available_balance >= provider_cost
+            
+            return Response({'can_fulfill': can_fulfill})
+            
+        except Exception as e:
+            logger.error(f"Error checking provider balance: {e}")
+            return Response({'can_fulfill': False, 'message': 'Internal Server Error'})
+
+
 # === Ticket Views ===
 
 class TicketListCreateView(APIView):
@@ -511,6 +612,83 @@ class TicketDetailView(APIView):
 class IsAdminUser(permissions.BasePermission):
     def has_permission(self, request, view):
         return request.user and request.user.is_staff
+
+
+class AdminTicketListView(APIView):
+    """Admin endpoint to list all support tickets."""
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        tickets = Ticket.objects.all().order_by(
+            # Open/Pending first, then Answered, then Closed
+            models.Case(
+                models.When(status='pending', then=0),
+                models.When(status='open', then=1),
+                models.When(status='answered', then=2),
+                models.When(status='closed', then=3),
+                default=4,
+                output_field=models.IntegerField()
+            ),
+            '-updated_at'
+        )
+        return Response({
+            'tickets': TicketSerializer(tickets, many=True).data,
+            'total': tickets.count()
+        })
+
+
+class AdminPendingTicketsCountView(APIView):
+    """Returns the count of currently pending/open support tickets."""
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        count = Ticket.objects.filter(status__in=['pending', 'open']).count()
+        return Response({'count': count})
+
+
+class AdminTicketDetailView(APIView):
+    """Admin endpoint to view, reply to, or close a specific ticket."""
+    permission_classes = [IsAdminUser]
+
+    def get(self, request, ticket_id):
+        try:
+            ticket = Ticket.objects.get(id=ticket_id)
+            return Response(TicketSerializer(ticket).data)
+        except Ticket.DoesNotExist:
+            return Response({'error': 'Ticket not found'}, status=status.HTTP_404_NOT_FOUND)
+
+    def post(self, request, ticket_id):
+        try:
+            ticket = Ticket.objects.get(id=ticket_id)
+        except Ticket.DoesNotExist:
+            return Response({'error': 'Ticket not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        action = request.data.get('action')
+
+        if action == 'close':
+            ticket.status = Ticket.Status.CLOSED
+            ticket.save()
+            return Response(TicketSerializer(ticket).data)
+
+        serializer = TicketReplyCreateSerializer(data=request.data)
+        if serializer.is_valid():
+            reply = TicketReply.objects.create(
+                ticket=ticket,
+                user=request.user,
+                message=serializer.validated_data['message'],
+                is_admin=True
+            )
+            ticket.status = Ticket.Status.ANSWERED
+            ticket.save()
+
+            # Email notification
+            try:
+                email_service.send_ticket_reply(ticket, reply, ticket.user)
+            except Exception as e:
+                logger.error(f'Failed to send admin ticket reply email: {e}')
+
+            return Response(TicketReplySerializer(reply).data, status=status.HTTP_201_CREATED)
+        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
 class AdminDashboardView(APIView):
@@ -855,6 +1033,44 @@ class AdminUserToggleActiveView(APIView):
             return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
 
 
+class AdminUserAdjustBalanceView(APIView):
+    """Manually adjust a user's wallet balance."""
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, user_id):
+        try:
+            user = User.objects.get(id=user_id)
+            action = request.data.get('action') # 'credit' or 'deduct'
+            amount = request.data.get('amount')
+            
+            if not amount or not action:
+                return Response({'error': 'Action and amount are required'}, status=status.HTTP_400_BAD_REQUEST)
+                
+            try:
+                amount = Decimal(str(amount))
+                if amount <= 0:
+                    raise ValueError
+            except (ValueError, TypeError, Decimal.InvalidOperation):
+                return Response({'error': 'Invalid amount'}, status=status.HTTP_400_BAD_REQUEST)
+
+            if action == 'credit':
+                user.wallet.refund(amount, description=f'Manual admin credit')
+            elif action == 'deduct':
+                try:
+                    user.wallet.charge(amount, description=f'Manual admin deduction')
+                except ValueError as e:
+                    return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                return Response({'error': 'Invalid action'}, status=status.HTTP_400_BAD_REQUEST)
+
+            return Response({
+                'message': f'Successfully {action}ed ₦{amount}',
+                'new_balance': str(user.wallet.balance)
+            })
+        except User.DoesNotExist:
+            return Response({'error': 'User not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
 class AdminUserTransactionsView(APIView):
     """View a specific user's transactions."""
     permission_classes = [IsAdminUser]
@@ -870,8 +1086,117 @@ class AdminUserTransactionsView(APIView):
         return Response({
             'user_email': user.email,
             'balance': str(user.wallet.balance),
-            'transactions': TransactionSerializer(transactions, many=True).data,
+            'transactions': TransactionSerializer(transactions, many=True, context={'request': request}).data,
         })
+
+
+class AdminPendingDepositsView(APIView):
+    """Admin endpoint to fetch pending manual deposits with proofs."""
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        from ..serializers import TransactionSerializer
+        transactions = Transaction.objects.filter(
+            status=Transaction.Status.PENDING,
+            payment_gateway='manual'
+        ).order_by('created_at')
+        
+        return Response(TransactionSerializer(transactions, many=True, context={'request': request}).data)
+
+
+class AdminPendingDepositsCountView(APIView):
+    """Admin endpoint to fetch just the count of pending manual deposits."""
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        count = Transaction.objects.filter(
+            status=Transaction.Status.PENDING,
+            payment_gateway='manual'
+        ).count()
+        
+        return Response({'count': count})
+
+
+class AdminVerifyTransactionView(APIView):
+    """Admin verifies a pending transaction and credits the user."""
+    permission_classes = [IsAdminUser]
+    
+    def post(self, request, transaction_id):
+        import os
+        try:
+            transaction = Transaction.objects.get(id=transaction_id)
+        except Transaction.DoesNotExist:
+            return Response({'error': 'Transaction not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+        if transaction.status != Transaction.Status.PENDING:
+            return Response({'error': f'Transaction is already {transaction.status}'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        if transaction.payment_gateway == 'manual':
+            # Handle Manual Deposit Approval
+            wallet = transaction.wallet
+            new_balance = wallet.confirm_deposit(transaction)
+            
+            # Clean up the proof image from storage since it's now approved
+            if transaction.payment_proof and os.path.isfile(transaction.payment_proof.path):
+                try:
+                    os.remove(transaction.payment_proof.path)
+                    transaction.payment_proof = None
+                    transaction.save(update_fields=['payment_proof'])
+                except Exception as e:
+                    import logging
+                    logger = logging.getLogger(__name__)
+                    logger.error(f'Failed to delete proof file: {e}')
+                    
+            return Response({'message': 'Manual deposit approved and credited successfully', 'new_balance': str(new_balance)})
+
+        elif transaction.payment_gateway != 'squad' or not transaction.payment_reference:
+            # Fallback manual credit for non-squad or old transactions with no reference
+            wallet = transaction.wallet
+            new_balance = wallet.confirm_deposit(transaction)
+            return Response({'message': 'Manually credited successfully', 'new_balance': str(new_balance)})
+
+        try:
+            from ..services.squad import squad_service, SquadPaymentError
+            result = squad_service.verify_payment(transaction.payment_reference)
+            if result['success']:
+                wallet = transaction.wallet
+                new_balance = wallet.confirm_deposit(transaction)
+                return Response({'message': 'Verified with Squad and credited successfully', 'new_balance': str(new_balance)})
+            else:
+                return Response({'error': 'Squad verification failed (not successful)'}, status=status.HTTP_400_BAD_REQUEST)
+        except Exception as e:
+            return Response({'error': f'Verification failed: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class AdminFailTransactionView(APIView):
+    """Admin manually marks a pending transaction as failed."""
+    permission_classes = [IsAdminUser]
+    
+    def post(self, request, transaction_id):
+        import os
+        try:
+            transaction = Transaction.objects.get(id=transaction_id)
+        except Transaction.DoesNotExist:
+            return Response({'error': 'Transaction not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+        if transaction.status != Transaction.Status.PENDING:
+            return Response({'error': f'Transaction is already {transaction.status}'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        wallet = transaction.wallet
+        wallet.fail_deposit(transaction)
+        
+        # Clean up the proof image from storage since it's rejected
+        if transaction.payment_proof and os.path.isfile(transaction.payment_proof.path):
+            try:
+                os.remove(transaction.payment_proof.path)
+                transaction.payment_proof = None
+                transaction.save(update_fields=['payment_proof'])
+            except Exception as e:
+                import logging
+                logger = logging.getLogger(__name__)
+                logger.error(f'Failed to delete proof file: {e}')
+        
+        return Response({'message': 'Transaction marked as failed and proof deleted'})
 
 
 class AdminDeleteLogView(APIView):
@@ -885,6 +1210,58 @@ class AdminDeleteLogView(APIView):
             return Response({'message': 'Log deleted'}, status=status.HTTP_200_OK)
         except APILog.DoesNotExist:
             return Response({'error': 'Log not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class AdminOrderMarkCompletedView(APIView):
+    """Manually mark an order as completed."""
+    permission_classes = [IsAdminUser]
+
+    def post(self, request, order_id):
+        try:
+            order = Order.objects.get(id=order_id)
+            if order.status not in [Order.Status.PENDING, Order.Status.PROCESSING]:
+                return Response({'error': f'Cannot mark {order.status} order as completed'}, status=status.HTTP_400_BAD_REQUEST)
+            
+            order.status = Order.Status.COMPLETED
+            order.completed_at = timezone.now()
+            order.save()
+            return Response({'message': 'Order marked as completed'})
+        except Order.DoesNotExist:
+            return Response({'error': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class AdminOrderRefillView(APIView):
+    """Admin endpoint to request a refill for a user's order."""
+    permission_classes = [IsAdminUser]
+    
+    def post(self, request, order_id):
+        try:
+            order = Order.objects.get(id=order_id)
+        except Order.DoesNotExist:
+            return Response({'error': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+            
+        if not order.service or not order.service.has_refill:
+            return Response({'error': 'This service does not support refills.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        if order.status != Order.Status.COMPLETED:
+            return Response({'error': 'Order must be completed to request a refill.'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        try:
+            result = smm_provider.create_refill(
+                order_id=order.provider_order_id,
+                user=request.user,
+                order=order
+            )
+            
+            if 'refill' in result:
+                return Response({'message': 'Refill requested successfully.', 'refill_id': result['refill']})
+            elif 'error' in result:
+                return Response({'error': str(result['error'])}, status=status.HTTP_400_BAD_REQUEST)
+            else:
+                return Response({'error': 'Failed to request refill from provider.'}, status=status.HTTP_400_BAD_REQUEST)
+                
+        except SMMProviderError as e:
+            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class AdminDeleteOrderView(APIView):
@@ -941,14 +1318,45 @@ class AdminToggleServiceActiveView(APIView):
             return Response({'error': 'Service not found'}, status=status.HTTP_404_NOT_FOUND)
 
 
-class AdminGetSiteSettingsView(APIView):
-    """Get site-wide settings."""
-    permission_classes = [IsAdminUser]
+@method_decorator(csrf_exempt, name='dispatch')
+class SiteSettingsView(APIView):
+    """Get or update site-wide settings."""
+    permission_classes = [permissions.IsAuthenticated]
 
     def get(self, request):
         settings = SiteSettings.load()
         return Response({
             'show_inactive_services': settings.show_inactive_services,
+            'manual_bank_name': settings.manual_bank_name,
+            'manual_account_name': settings.manual_account_name,
+            'manual_account_number': settings.manual_account_number,
+        })
+        
+    def post(self, request):
+        # Only admins can update settings
+        if not request.user.is_staff:
+            return Response(
+                {"detail": "You do not have permission to perform this action."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+            
+        settings = SiteSettings.load()
+        
+        # Update bank settings if provided
+        if 'manual_bank_name' in request.data:
+            settings.manual_bank_name = request.data['manual_bank_name']
+        if 'manual_account_name' in request.data:
+            settings.manual_account_name = request.data['manual_account_name']
+        if 'manual_account_number' in request.data:
+            settings.manual_account_number = request.data['manual_account_number']
+            
+        settings.save()
+        return Response({
+            'message': 'Site settings updated successfully',
+            'show_inactive_services': settings.show_inactive_services,
+            'manual_bank_name': settings.manual_bank_name,
+            'manual_account_name': settings.manual_account_name,
+            'manual_account_number': settings.manual_account_number,
         })
 
 

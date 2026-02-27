@@ -71,7 +71,7 @@ class WalletSerializer(serializers.ModelSerializer):
 class TransactionSerializer(serializers.ModelSerializer):
     class Meta:
         model = Transaction
-        fields = ('id', 'type', 'amount', 'description', 'balance_after', 'status', 'reference', 'created_at')
+        fields = ('id', 'type', 'amount', 'description', 'balance_after', 'status', 'reference', 'payment_reference', 'payment_gateway', 'payment_proof', 'created_at')
         read_only_fields = fields
 
 
@@ -166,11 +166,13 @@ class OrderCreateSerializer(serializers.Serializer):
 class OrderSerializer(serializers.ModelSerializer):
     service_name = serializers.CharField(source='service.name', read_only=True)
     service_id = serializers.IntegerField(source='service.provider_id', read_only=True)
+    service_has_refill = serializers.BooleanField(source='service.has_refill', read_only=True)
     
     class Meta:
         model = Order
         fields = ('id', 'service_id', 'service_name', 'link', 'quantity',
-                  'charge', 'status', 'start_count', 'remains', 'created_at', 'completed_at')
+                  'charge', 'status', 'start_count', 'remains', 'created_at', 'completed_at',
+                  'service_has_refill')
         read_only_fields = fields
 
 
@@ -198,12 +200,13 @@ class TicketReplySerializer(serializers.ModelSerializer):
 class TicketSerializer(serializers.ModelSerializer):
     replies = TicketReplySerializer(many=True, read_only=True)
     order_id = serializers.UUIDField(write_only=True, required=False, allow_null=True)
+    user_email = serializers.CharField(source='user.email', read_only=True)
     
     class Meta:
         model = Ticket
         fields = ('id', 'subject', 'message', 'status', 'priority', 
-                  'order', 'order_id', 'replies', 'created_at', 'updated_at')
-        read_only_fields = ('id', 'status', 'replies', 'created_at', 'updated_at', 'order')
+                  'order', 'order_id', 'replies', 'user_email', 'created_at', 'updated_at')
+        read_only_fields = ('id', 'status', 'replies', 'user_email', 'created_at', 'updated_at', 'order')
     
     def create(self, validated_data):
         order_id = validated_data.pop('order_id', None)
@@ -213,9 +216,10 @@ class TicketSerializer(serializers.ModelSerializer):
 
 
 class TicketListSerializer(serializers.ModelSerializer):
+    user_email = serializers.CharField(source='user.email', read_only=True)
     class Meta:
         model = Ticket
-        fields = ('id', 'subject', 'status', 'priority', 'created_at', 'updated_at')
+        fields = ('id', 'subject', 'status', 'priority', 'user_email', 'created_at', 'updated_at')
 
 
 class TicketReplyCreateSerializer(serializers.Serializer):
@@ -243,12 +247,14 @@ class AdminOrderSerializer(serializers.ModelSerializer):
     """Order serializer for admin with profit info."""
     user_email = serializers.CharField(source='user.email', read_only=True)
     service_name = serializers.CharField(source='service.name', read_only=True)
+    service_has_refill = serializers.BooleanField(source='service.has_refill', read_only=True)
     
     class Meta:
         model = Order
         fields = ('id', 'user_email', 'service_name', 'link', 'quantity',
                   'provider_rate', 'user_rate', 'charge', 'profit', 'status',
-                  'provider_order_id', 'created_at')
+                  'provider_order_id', 'start_count', 'remains', 'created_at',
+                  'service_has_refill')
 
 
 class AdminUserSerializer(serializers.ModelSerializer):

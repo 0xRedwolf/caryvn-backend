@@ -151,35 +151,60 @@ class Wallet(models.Model):
         return self.balance
     
     def charge(self, amount, description='Order charge'):
-        """Deduct funds from wallet and create transaction."""
+        """Deduct funds from wallet atomically with row-level lock."""
+        from django.db import transaction as db_transaction
+        from django.db.models import F
+
         amount = Decimal(str(amount))
-        if self.balance < amount:
-            raise ValueError('Insufficient balance')
-        self.balance -= amount
-        self.save(update_fields=['balance', 'updated_at'])
-        Transaction.objects.create(
-            wallet=self,
-            type=Transaction.Type.CHARGE,
-            amount=-amount,
-            description=description,
-            balance_after=self.balance,
-            status=Transaction.Status.SUCCESS,
-        )
+        with db_transaction.atomic():
+            # Lock the wallet row to prevent concurrent reads of stale balance
+            wallet = Wallet.objects.select_for_update().get(pk=self.pk)
+            if wallet.balance < amount:
+                raise ValueError('Insufficient balance')
+            
+            # Atomic database-level subtraction
+            Wallet.objects.filter(pk=self.pk).update(
+                balance=F('balance') - amount
+            )
+            # Refresh to get actual new balance
+            wallet.refresh_from_db()
+            self.balance = wallet.balance
+
+            Transaction.objects.create(
+                wallet=self,
+                type=Transaction.Type.CHARGE,
+                amount=-amount,
+                description=description,
+                balance_after=wallet.balance,
+                status=Transaction.Status.SUCCESS,
+            )
         return self.balance
     
     def refund(self, amount, description='Refund'):
-        """Refund funds to wallet."""
+        """Refund funds to wallet atomically with row-level lock."""
+        from django.db import transaction as db_transaction
+        from django.db.models import F
+
         amount = Decimal(str(amount))
-        self.balance += amount
-        self.save(update_fields=['balance', 'updated_at'])
-        Transaction.objects.create(
-            wallet=self,
-            type=Transaction.Type.REFUND,
-            amount=amount,
-            description=description,
-            balance_after=self.balance,
-            status=Transaction.Status.SUCCESS,
-        )
+        with db_transaction.atomic():
+            # Lock the wallet row
+            Wallet.objects.select_for_update().get(pk=self.pk)
+
+            # Atomic database-level addition
+            Wallet.objects.filter(pk=self.pk).update(
+                balance=F('balance') + amount
+            )
+            # Refresh to get actual new balance
+            self.refresh_from_db()
+
+            Transaction.objects.create(
+                wallet=self,
+                type=Transaction.Type.REFUND,
+                amount=amount,
+                description=description,
+                balance_after=self.balance,
+                status=Transaction.Status.SUCCESS,
+            )
         return self.balance
 
 
@@ -206,7 +231,8 @@ class Transaction(models.Model):
     reference = models.CharField(max_length=100, blank=True)  # Legacy field
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.SUCCESS)
     payment_reference = models.CharField(max_length=100, blank=True, null=True, unique=True)
-    payment_gateway = models.CharField(max_length=20, blank=True)  # 'squad', etc.
+    payment_gateway = models.CharField(max_length=20, blank=True)  # 'squad', 'manual', etc.
+    payment_proof = models.ImageField(upload_to='payment_proofs/', null=True, blank=True)
     hidden_by_user = models.BooleanField(default=False)  # Soft-delete: hidden from user's view
     created_at = models.DateTimeField(auto_now_add=True)
     
@@ -491,6 +517,11 @@ class SiteSettings(models.Model):
         default=False,
         help_text='When enabled, inactive services are also visible to users'
     )
+    
+    # Manual Deposit Settings
+    manual_bank_name = models.CharField(max_length=100, blank=True, help_text='e.g. Opay, Kuda, GTBank')
+    manual_account_name = models.CharField(max_length=100, blank=True, help_text='Name on the receiving account')
+    manual_account_number = models.CharField(max_length=50, blank=True, help_text='Receiving account number')
     
     class Meta:
         verbose_name = 'Site Settings'
