@@ -21,9 +21,9 @@ app.conf.beat_schedule = {
         'task': 'core.tasks.sync_orders_task',
         'schedule': 30 * 60,  # Every 30 minutes
     },
-    'sync-services-every-6-hours': {
+    'sync-services-every-30-minutes': {
         'task': 'core.tasks.sync_services_task',
-        'schedule': 6 * 60 * 60,  # Every 6 hours
+        'schedule': 30 * 60,  # Every 30 minutes
     },
 }
 app.conf.timezone = 'UTC'

@@ -96,6 +96,76 @@ class InitiateTopupView(APIView):
             )
 
 
+class InitiateManualTopupView(APIView):
+    """Initiate a wallet top-up via Manual Bank Transfer."""
+
+    def post(self, request):
+        import uuid
+        amount = request.data.get('amount')
+        payment_proof = request.FILES.get('payment_proof')
+
+        if not amount:
+            return Response(
+                {'error': 'Amount is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        if not payment_proof:
+            return Response(
+                {'error': 'Payment proof image is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            amount = Decimal(str(amount))
+        except Exception:
+            return Response(
+                {'error': 'Invalid amount'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if amount < MIN_TOPUP_AMOUNT:
+            return Response(
+                {'error': f'Minimum top-up amount is ₦{MIN_TOPUP_AMOUNT:,.0f}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if amount > MAX_TOPUP_AMOUNT:
+            return Response(
+                {'error': f'Maximum top-up amount is ₦{MAX_TOPUP_AMOUNT:,.0f}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Generate a unique internal reference for the manual transfer
+        reference = f'MN|{uuid.uuid4().hex[:12].upper()}'
+        wallet = request.user.wallet
+
+        try:
+            transaction = wallet.create_pending_deposit(
+                amount=amount,
+                payment_reference=reference,
+                payment_gateway='manual',
+                description=f'Wallet deposit via Manual Transfer (₦{amount:,.2f})',
+            )
+            
+            # Attach the uploaded proof
+            transaction.payment_proof = payment_proof
+            transaction.save(update_fields=['payment_proof'])
+            
+            return Response({
+                'message': 'Manual transfer proof submitted successfully. Pending admin approval.',
+                'reference': reference,
+                'amount': str(amount),
+            })
+            
+        except Exception as e:
+            logger.error(f'Failed to create manual pending transaction: {e}')
+            return Response(
+                {'error': 'Failed to submit payment proof'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
 class VerifyTopupView(APIView):
     """Verify a wallet top-up payment via Squad."""
 

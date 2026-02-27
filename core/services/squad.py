@@ -108,7 +108,13 @@ class SquadPaymentService:
                 timeout=30,
             )
 
-            data = response.json()
+            try:
+                data = response.json()
+            except Exception:
+                # Squad sometimes returns 500 internal server error HTML
+                logger.error(f'Squad verify response not JSON: status={response.status_code}, content={response.text[:200]}')
+                raise SquadPaymentError(f'Squad returned invalid response (Status {response.status_code}): {response.text[:100]}')
+
             logger.info(f'Squad verify response: status={response.status_code}, ref={transaction_ref}')
 
             if response.status_code == 200 and data.get('status') == 200:

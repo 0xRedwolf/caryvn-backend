@@ -252,6 +252,32 @@ class SMMProvider:
         
         return response
     
+    def create_refill(self, order_id: str, user=None, order=None) -> Dict[str, Any]:
+        """
+        Request a refill for an order from the provider.
+        
+        Args:
+            order_id: Provider order ID
+            user: User requesting the refill
+            order: Order object for logging
+            
+        Returns:
+            Dict with 'refill' (refill ID) on success
+        """
+        if not self.api_url or not self.api_key or self.api_key == 'demo-key':
+            # Demo mode - return mock refill
+            import random
+            return {'refill': str(random.randint(1000, 9999))}
+            
+        response = self._make_request(
+            'refill',
+            data={'order': order_id},
+            user=user,
+            order=order
+        )
+        
+        return response
+    
     def _get_demo_services(self) -> List[Dict[str, Any]]:
         """Return demo services for development/testing."""
         return [
