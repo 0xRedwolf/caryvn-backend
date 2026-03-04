@@ -29,7 +29,8 @@ from .views import (
     AdminTicketListView, AdminTicketDetailView, AdminPendingTicketsCountView
 )
 from .views.payment_views import (
-    InitiateTopupView, VerifyTopupView, SquadWebhookView, InitiateManualTopupView
+    InitiateTopupView, VerifyTopupView, SquadWebhookView,
+    InitiateManualTopupView, InitiateCryptoTopupView
 )
 from .views.analytics_views import AdminAnalyticsView
 from .views.activity_views import LogActivityView, AdminUserActivityView
@@ -52,6 +53,7 @@ urlpatterns = [
     path('wallet/transactions/<uuid:transaction_id>/hide/', HideTransactionView.as_view(), name='hide-transaction'),
     path('wallet/topup/initiate/', InitiateTopupView.as_view(), name='topup-initiate'),
     path('wallet/topup/manual/', InitiateManualTopupView.as_view(), name='topup-manual'),
+    path('wallet/topup/crypto/', InitiateCryptoTopupView.as_view(), name='topup-crypto'),
     path('wallet/topup/verify/', VerifyTopupView.as_view(), name='topup-verify'),
     
     # Payment webhooks (no auth — validated by signature)
