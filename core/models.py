@@ -518,11 +518,18 @@ class SiteSettings(models.Model):
         help_text='When enabled, inactive services are also visible to users'
     )
     
-    # Manual Deposit Settings
+    # Manual Bank Deposit Settings
     manual_bank_name = models.CharField(max_length=100, blank=True, help_text='e.g. Opay, Kuda, GTBank')
     manual_account_name = models.CharField(max_length=100, blank=True, help_text='Name on the receiving account')
     manual_account_number = models.CharField(max_length=50, blank=True, help_text='Receiving account number')
-    
+
+    # Crypto Deposit Settings
+    binance_pay_id = models.CharField(max_length=100, blank=True, help_text='Admin Binance Pay ID shown to users')
+    binance_pay_qr = models.ImageField(upload_to='crypto_qr/', null=True, blank=True, help_text='QR code for Binance Pay')
+    crypto_usdt_trc20 = models.CharField(max_length=200, blank=True, help_text='USDT-TRC20 wallet address')
+    crypto_usdt_bep20 = models.CharField(max_length=200, blank=True, help_text='USDT-BEP20 wallet address')
+    crypto_sol = models.CharField(max_length=200, blank=True, help_text='SOL wallet address')
+
     class Meta:
         verbose_name = 'Site Settings'
         verbose_name_plural = 'Site Settings'

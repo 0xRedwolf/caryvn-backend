@@ -1,7 +1,13 @@
 """
 API Views for Caryvn.
 """
+import logging
 from decimal import Decimal
+
+logger = logging.getLogger(__name__)
+
+from core.services.email_service import email_service
+
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -363,12 +369,13 @@ class OrderCreateView(APIView):
                 'refunded': True,
             }, status=status.HTTP_201_CREATED)
         
-        # Send order confirmation email
+
+        # Send order confirmation email (fire-and-forget — never blocks the response)
         try:
             email_service.send_order_confirmation(request.user, order)
         except Exception as e:
-            logger.error(f'Failed to send order confirmation email: {e}')
-        
+            logger.warning(f'Order confirmation email failed (non-critical): {e}')
+
         return Response({
             'order': OrderSerializer(order).data,
             'message': 'Order placed successfully'
@@ -1096,12 +1103,23 @@ class AdminPendingDepositsView(APIView):
 
     def get(self, request):
         from ..serializers import TransactionSerializer
-        transactions = Transaction.objects.filter(
+        # filter by all manual/crypto gateways
+        transactions = Transaction.objects.select_related('wallet__user').filter(
             status=Transaction.Status.PENDING,
-            payment_gateway='manual'
+        ).exclude(
+            payment_gateway='squad'
+        ).exclude(
+            payment_gateway=''
         ).order_by('created_at')
-        
-        return Response(TransactionSerializer(transactions, many=True, context={'request': request}).data)
+
+        data = []
+        for tx in transactions:
+            item = TransactionSerializer(tx, context={'request': request}).data
+            item['user_email'] = tx.wallet.user.email
+            item['payment_reference'] = tx.payment_reference
+            data.append(item)
+
+        return Response(data)
 
 
 class AdminPendingDepositsCountView(APIView):
@@ -1111,9 +1129,12 @@ class AdminPendingDepositsCountView(APIView):
     def get(self, request):
         count = Transaction.objects.filter(
             status=Transaction.Status.PENDING,
-            payment_gateway='manual'
+        ).exclude(
+            payment_gateway='squad'
+        ).exclude(
+            payment_gateway=''
         ).count()
-        
+
         return Response({'count': count})
 
 
@@ -1131,29 +1152,79 @@ class AdminVerifyTransactionView(APIView):
         if transaction.status != Transaction.Status.PENDING:
             return Response({'error': f'Transaction is already {transaction.status}'}, status=status.HTTP_400_BAD_REQUEST)
             
-        if transaction.payment_gateway == 'manual':
-            # Handle Manual Deposit Approval
+        # Non-Squad gateways (manual bank, binance_pay, on_chain_*): approve directly
+        is_squad = (transaction.payment_gateway == 'squad' and bool(transaction.payment_reference))
+        if not is_squad:
+            is_crypto = transaction.payment_gateway in (
+                'binance_pay', 'on_chain_usdt_trc20', 'on_chain_usdt_bep20', 'on_chain_sol'
+            )
+
+            # For crypto deposits, admin must supply the naira credit amount
+            if is_crypto:
+                credit_amount_raw = request.data.get('credit_amount')
+                if not credit_amount_raw:
+                    return Response(
+                        {'error': 'credit_amount (naira) is required to approve a crypto deposit'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+                try:
+                    credit_amount = Decimal(str(credit_amount_raw))
+                    if credit_amount <= 0:
+                        raise ValueError
+                except Exception:
+                    return Response(
+                        {'error': 'credit_amount must be a positive number'},
+                        status=status.HTTP_400_BAD_REQUEST
+                    )
+
+                # Store original USD amount for the response, then overwrite with naira
+                original_usd = transaction.amount
+                transaction.amount = credit_amount
+                transaction.description = (
+                    f'{transaction.description} → ₦{credit_amount:,.2f} credited'
+                )
+                transaction.save(update_fields=['amount', 'description'])
+            else:
+                original_usd = None
+                credit_amount = transaction.amount
+
             wallet = transaction.wallet
             new_balance = wallet.confirm_deposit(transaction)
-            
-            # Clean up the proof image from storage since it's now approved
-            if transaction.payment_proof and os.path.isfile(transaction.payment_proof.path):
+
+            # ── Send top-up success email ──────────────────────────────────
+            # For crypto: transaction.amount is already overwritten with naira credit.
+            # For bank/manual: transaction.amount is the original naira amount.
+            # Either way, credit_amount holds the naira value to display.
+            try:
+                email_service.send_topup_success(
+                    user=wallet.user,
+                    amount=credit_amount,
+                    new_balance=new_balance,
+                )
+            except Exception as e:
+                logger.warning(f'Topup success email failed (non-critical): {e}')
+
+            # Clean up the proof image
+            if transaction.payment_proof:
                 try:
-                    os.remove(transaction.payment_proof.path)
+                    import os
+                    if os.path.isfile(transaction.payment_proof.path):
+                        os.remove(transaction.payment_proof.path)
                     transaction.payment_proof = None
                     transaction.save(update_fields=['payment_proof'])
                 except Exception as e:
-                    import logging
-                    logger = logging.getLogger(__name__)
                     logger.error(f'Failed to delete proof file: {e}')
-                    
-            return Response({'message': 'Manual deposit approved and credited successfully', 'new_balance': str(new_balance)})
 
-        elif transaction.payment_gateway != 'squad' or not transaction.payment_reference:
-            # Fallback manual credit for non-squad or old transactions with no reference
-            wallet = transaction.wallet
-            new_balance = wallet.confirm_deposit(transaction)
-            return Response({'message': 'Manually credited successfully', 'new_balance': str(new_balance)})
+            response_data = {
+                'message': 'Deposit approved and credited successfully',
+                'new_balance': str(new_balance),
+                'credited_amount': str(credit_amount),
+            }
+            if is_crypto and original_usd:
+                rate = credit_amount / original_usd if original_usd else None
+                response_data['rate_used'] = str(rate.quantize(Decimal('0.01'))) if rate else None
+
+            return Response(response_data)
 
         try:
             from ..services.squad import squad_service, SquadPaymentError
@@ -1161,6 +1232,14 @@ class AdminVerifyTransactionView(APIView):
             if result['success']:
                 wallet = transaction.wallet
                 new_balance = wallet.confirm_deposit(transaction)
+                try:
+                    email_service.send_topup_success(
+                        user=wallet.user,
+                        amount=transaction.amount,
+                        new_balance=new_balance,
+                    )
+                except Exception as e:
+                    logger.warning(f'Topup success email failed (non-critical): {e}')
                 return Response({'message': 'Verified with Squad and credited successfully', 'new_balance': str(new_balance)})
             else:
                 return Response({'error': 'Squad verification failed (not successful)'}, status=status.HTTP_400_BAD_REQUEST)
@@ -1330,6 +1409,12 @@ class SiteSettingsView(APIView):
             'manual_bank_name': settings.manual_bank_name,
             'manual_account_name': settings.manual_account_name,
             'manual_account_number': settings.manual_account_number,
+            # Crypto settings
+            'binance_pay_id': settings.binance_pay_id,
+            'binance_pay_qr': request.build_absolute_uri(settings.binance_pay_qr.url) if settings.binance_pay_qr else None,
+            'crypto_usdt_trc20': settings.crypto_usdt_trc20,
+            'crypto_usdt_bep20': settings.crypto_usdt_bep20,
+            'crypto_sol': settings.crypto_sol,
         })
         
     def post(self, request):
@@ -1341,7 +1426,7 @@ class SiteSettingsView(APIView):
             )
             
         settings = SiteSettings.load()
-        
+
         # Update bank settings if provided
         if 'manual_bank_name' in request.data:
             settings.manual_bank_name = request.data['manual_bank_name']
@@ -1349,7 +1434,21 @@ class SiteSettingsView(APIView):
             settings.manual_account_name = request.data['manual_account_name']
         if 'manual_account_number' in request.data:
             settings.manual_account_number = request.data['manual_account_number']
-            
+
+        # Update crypto settings if provided
+        if 'binance_pay_id' in request.data:
+            settings.binance_pay_id = request.data['binance_pay_id']
+        if 'crypto_usdt_trc20' in request.data:
+            settings.crypto_usdt_trc20 = request.data['crypto_usdt_trc20']
+        if 'crypto_usdt_bep20' in request.data:
+            settings.crypto_usdt_bep20 = request.data['crypto_usdt_bep20']
+        if 'crypto_sol' in request.data:
+            settings.crypto_sol = request.data['crypto_sol']
+
+        # Handle QR image upload
+        if 'binance_pay_qr' in request.FILES:
+            settings.binance_pay_qr = request.FILES['binance_pay_qr']
+
         settings.save()
         return Response({
             'message': 'Site settings updated successfully',
@@ -1357,6 +1456,11 @@ class SiteSettingsView(APIView):
             'manual_bank_name': settings.manual_bank_name,
             'manual_account_name': settings.manual_account_name,
             'manual_account_number': settings.manual_account_number,
+            'binance_pay_id': settings.binance_pay_id,
+            'binance_pay_qr': request.build_absolute_uri(settings.binance_pay_qr.url) if settings.binance_pay_qr else None,
+            'crypto_usdt_trc20': settings.crypto_usdt_trc20,
+            'crypto_usdt_bep20': settings.crypto_usdt_bep20,
+            'crypto_sol': settings.crypto_sol,
         })
 
 
