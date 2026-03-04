@@ -212,17 +212,19 @@ SQUAD_SECRET_KEY = env('SQUAD_SECRET_KEY', default='')
 SQUAD_PUBLIC_KEY = env('SQUAD_PUBLIC_KEY', default='')
 SQUAD_BASE_URL = env('SQUAD_BASE_URL', default='https://sandbox-api-d.squadco.com')
 
-# Email Configuration
+# Email Configuration (SMTP settings kept for reference but unused — see email_service.py)
 EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
 EMAIL_HOST = env('EMAIL_HOST', default='smtp.gmail.com')
 EMAIL_PORT = env.int('EMAIL_PORT', default=587)
 EMAIL_USE_SSL = env.bool('EMAIL_USE_SSL', default=False)
-# TLS and SSL are mutually exclusive in Django — SSL takes priority
 EMAIL_USE_TLS = False if EMAIL_USE_SSL else env.bool('EMAIL_USE_TLS', default=True)
 EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
 DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='Caryvn <noreply@caryvn.com>')
-EMAIL_TIMEOUT = 10  # Seconds — prevents approval from hanging if SMTP is unreachable
+EMAIL_TIMEOUT = 10
+
+# Resend HTTP API key — used by email_service.py instead of Django SMTP (Railway blocks SMTP)
+RESEND_API_KEY = env('RESEND_API_KEY', default='')
 
 # Production security settings
 if not DEBUG:

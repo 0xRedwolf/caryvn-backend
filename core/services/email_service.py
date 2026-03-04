@@ -1,11 +1,13 @@
 """
 Email notification service for Caryvn.
-Sends transactional emails for orders, top-ups, and ticket replies.
+Sends transactional emails via Resend HTTP API (bypasses SMTP — works on Railway).
 """
 import logging
+import urllib.request
+import urllib.error
+import json
 from decimal import Decimal
 from django.conf import settings
-from django.core.mail import send_mail
 from django.template.loader import render_to_string
 from django.utils.html import strip_tags
 
@@ -13,9 +15,12 @@ logger = logging.getLogger(__name__)
 
 
 class EmailService:
-    """Service for sending transactional email notifications."""
+    """Send transactional emails via Resend's REST API (no SMTP needed)."""
+
+    RESEND_API_URL = 'https://api.resend.com/emails'
 
     def __init__(self):
+        self.api_key = getattr(settings, 'RESEND_API_KEY', '')
         self.from_email = getattr(settings, 'DEFAULT_FROM_EMAIL', 'Caryvn <noreply@caryvn.com>')
         self.frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000').rstrip('/')
 
@@ -28,22 +33,42 @@ class EmailService:
         }
 
     def _send(self, subject, template_name, context, recipient_email):
-        """Send an email using an HTML template. Never raises — logs errors instead."""
+        """Send an email via Resend HTTP API. Never raises — logs errors instead."""
+        if not self.api_key:
+            logger.warning(f'RESEND_API_KEY not set — skipping email "{subject}" to {recipient_email}')
+            return False
+
         try:
             html_message = render_to_string(f'emails/{template_name}', context)
             plain_message = strip_tags(html_message)
 
-            send_mail(
-                subject=subject,
-                message=plain_message,
-                from_email=self.from_email,
-                recipient_list=[recipient_email],
-                html_message=html_message,
-                fail_silently=False,
+            payload = json.dumps({
+                'from': self.from_email,
+                'to': [recipient_email],
+                'subject': subject,
+                'html': html_message,
+                'text': plain_message,
+            }).encode('utf-8')
+
+            req = urllib.request.Request(
+                self.RESEND_API_URL,
+                data=payload,
+                headers={
+                    'Authorization': f'Bearer {self.api_key}',
+                    'Content-Type': 'application/json',
+                },
+                method='POST',
             )
-            logger.info(f'Email sent: {subject} → {recipient_email}')
+
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                resp_body = resp.read().decode('utf-8')
+                logger.info(f'Email sent via Resend: "{subject}" → {recipient_email} | {resp_body}')
             return True
 
+        except urllib.error.HTTPError as e:
+            body = e.read().decode('utf-8') if e.fp else ''
+            logger.error(f'Resend API error sending "{subject}" to {recipient_email}: HTTP {e.code} — {body}')
+            return False
         except Exception as e:
             logger.error(f'Failed to send email "{subject}" to {recipient_email}: {e}')
             return False
@@ -51,10 +76,7 @@ class EmailService:
     def send_order_confirmation(self, user, order):
         """Send order confirmation email after successful order placement."""
         context = self._get_base_context()
-        context.update({
-            'user': user,
-            'order': order,
-        })
+        context.update({'user': user, 'order': order})
         self._send(
             subject=f'Order Confirmed — #{str(order.id)[:8]}',
             template_name='order_confirmation.html',
@@ -80,11 +102,7 @@ class EmailService:
     def send_ticket_reply(self, ticket, reply, recipient_user):
         """Send notification when a ticket receives a reply."""
         context = self._get_base_context()
-        context.update({
-            'recipient': recipient_user,
-            'ticket': ticket,
-            'reply': reply,
-        })
+        context.update({'recipient': recipient_user, 'ticket': ticket, 'reply': reply})
         self._send(
             subject=f'New Reply on Ticket — {ticket.subject}',
             template_name='ticket_reply.html',
@@ -95,10 +113,7 @@ class EmailService:
     def send_password_reset(self, user, reset_url):
         """Send password reset link email."""
         context = self._get_base_context()
-        context.update({
-            'user': user,
-            'reset_url': reset_url,
-        })
+        context.update({'user': user, 'reset_url': reset_url})
         self._send(
             subject='Reset Your Password — Caryvn',
             template_name='password_reset.html',
