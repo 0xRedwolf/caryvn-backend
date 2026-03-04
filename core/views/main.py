@@ -1411,7 +1411,7 @@ class SiteSettingsView(APIView):
             'manual_account_number': settings.manual_account_number,
             # Crypto settings
             'binance_pay_id': settings.binance_pay_id,
-            'binance_pay_qr': request.build_absolute_uri(settings.binance_pay_qr.url) if settings.binance_pay_qr else None,
+            'binance_pay_qr': settings.binance_pay_qr or None,
             'crypto_usdt_trc20': settings.crypto_usdt_trc20,
             'crypto_usdt_bep20': settings.crypto_usdt_bep20,
             'crypto_sol': settings.crypto_sol,
@@ -1445,9 +1445,14 @@ class SiteSettingsView(APIView):
         if 'crypto_sol' in request.data:
             settings.crypto_sol = request.data['crypto_sol']
 
-        # Handle QR image upload
+        # Handle QR image upload — convert to base64 data URI so it survives Railway redeploys
         if 'binance_pay_qr' in request.FILES:
-            settings.binance_pay_qr = request.FILES['binance_pay_qr']
+            import base64
+            qr_file = request.FILES['binance_pay_qr']
+            qr_bytes = qr_file.read()
+            mime = qr_file.content_type or 'image/png'
+            b64 = base64.b64encode(qr_bytes).decode('utf-8')
+            settings.binance_pay_qr = f'data:{mime};base64,{b64}'
 
         settings.save()
         return Response({
@@ -1457,7 +1462,7 @@ class SiteSettingsView(APIView):
             'manual_account_name': settings.manual_account_name,
             'manual_account_number': settings.manual_account_number,
             'binance_pay_id': settings.binance_pay_id,
-            'binance_pay_qr': request.build_absolute_uri(settings.binance_pay_qr.url) if settings.binance_pay_qr else None,
+            'binance_pay_qr': settings.binance_pay_qr or None,
             'crypto_usdt_trc20': settings.crypto_usdt_trc20,
             'crypto_usdt_bep20': settings.crypto_usdt_bep20,
             'crypto_sol': settings.crypto_sol,
