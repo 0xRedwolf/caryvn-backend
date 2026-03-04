@@ -222,6 +222,7 @@ EMAIL_USE_TLS = False if EMAIL_USE_SSL else env.bool('EMAIL_USE_TLS', default=Tr
 EMAIL_HOST_USER = env('EMAIL_HOST_USER', default='')
 EMAIL_HOST_PASSWORD = env('EMAIL_HOST_PASSWORD', default='')
 DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='Caryvn <noreply@caryvn.com>')
+EMAIL_TIMEOUT = 10  # Seconds — prevents approval from hanging if SMTP is unreachable
 
 # Production security settings
 if not DEBUG:
