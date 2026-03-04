@@ -150,8 +150,12 @@ class InitiateManualTopupView(APIView):
                 description=f'Wallet deposit via Manual Transfer (₦{amount:,.2f})',
             )
             
-            # Attach the uploaded proof
-            transaction.payment_proof = payment_proof
+            # Encode proof as base64 data URI so it survives Railway redeploys
+            import base64
+            proof_bytes = payment_proof.read()
+            mime = payment_proof.content_type or 'image/jpeg'
+            b64 = base64.b64encode(proof_bytes).decode('utf-8')
+            transaction.payment_proof = f'data:{mime};base64,{b64}'
             transaction.save(update_fields=['payment_proof'])
             
             return Response({
@@ -323,9 +327,13 @@ class InitiateCryptoTopupView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-        # Attach proof image for on-chain deposits
+        # Encode proof image as base64 data URI for on-chain deposits
         if method == 'on_chain' and payment_proof:
-            tx.payment_proof = payment_proof
+            import base64
+            proof_bytes = payment_proof.read()
+            mime = payment_proof.content_type or 'image/jpeg'
+            b64 = base64.b64encode(proof_bytes).decode('utf-8')
+            tx.payment_proof = f'data:{mime};base64,{b64}'
             tx.save(update_fields=['payment_proof'])
 
         return Response({

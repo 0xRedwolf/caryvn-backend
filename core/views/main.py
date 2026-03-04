@@ -1204,16 +1204,13 @@ class AdminVerifyTransactionView(APIView):
             except Exception as e:
                 logger.warning(f'Topup success email failed (non-critical): {e}')
 
-            # Clean up the proof image
+            # Clear the proof field (it's stored as base64 in the DB, no file to delete)
             if transaction.payment_proof:
                 try:
-                    import os
-                    if os.path.isfile(transaction.payment_proof.path):
-                        os.remove(transaction.payment_proof.path)
-                    transaction.payment_proof = None
+                    transaction.payment_proof = ''
                     transaction.save(update_fields=['payment_proof'])
                 except Exception as e:
-                    logger.error(f'Failed to delete proof file: {e}')
+                    logger.error(f'Failed to clear proof field: {e}')
 
             response_data = {
                 'message': 'Deposit approved and credited successfully',
@@ -1264,16 +1261,13 @@ class AdminFailTransactionView(APIView):
         wallet = transaction.wallet
         wallet.fail_deposit(transaction)
         
-        # Clean up the proof image from storage since it's rejected
-        if transaction.payment_proof and os.path.isfile(transaction.payment_proof.path):
+        # Clear the proof field on rejection (base64 stored in DB, no file to delete)
+        if transaction.payment_proof:
             try:
-                os.remove(transaction.payment_proof.path)
-                transaction.payment_proof = None
+                transaction.payment_proof = ''
                 transaction.save(update_fields=['payment_proof'])
             except Exception as e:
-                import logging
-                logger = logging.getLogger(__name__)
-                logger.error(f'Failed to delete proof file: {e}')
+                logger.error(f'Failed to clear proof field: {e}')
         
         return Response({'message': 'Transaction marked as failed and proof deleted'})
 

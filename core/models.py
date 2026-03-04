@@ -232,7 +232,7 @@ class Transaction(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.SUCCESS)
     payment_reference = models.CharField(max_length=100, blank=True, null=True, unique=True)
     payment_gateway = models.CharField(max_length=20, blank=True)  # 'squad', 'manual', etc.
-    payment_proof = models.ImageField(upload_to='payment_proofs/', null=True, blank=True)
+    payment_proof = models.TextField(blank=True, default='', help_text='Payment proof image as base64 data URI')
     hidden_by_user = models.BooleanField(default=False)  # Soft-delete: hidden from user's view
     created_at = models.DateTimeField(auto_now_add=True)
     
