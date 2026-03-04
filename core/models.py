@@ -525,7 +525,7 @@ class SiteSettings(models.Model):
 
     # Crypto Deposit Settings
     binance_pay_id = models.CharField(max_length=100, blank=True, help_text='Admin Binance Pay ID shown to users')
-    binance_pay_qr = models.ImageField(upload_to='crypto_qr/', null=True, blank=True, help_text='QR code for Binance Pay')
+    binance_pay_qr = models.TextField(blank=True, default='', help_text='QR code image as base64 data URI (e.g. data:image/png;base64,...)')
     crypto_usdt_trc20 = models.CharField(max_length=200, blank=True, help_text='USDT-TRC20 wallet address')
     crypto_usdt_bep20 = models.CharField(max_length=200, blank=True, help_text='USDT-BEP20 wallet address')
     crypto_sol = models.CharField(max_length=200, blank=True, help_text='SOL wallet address')
