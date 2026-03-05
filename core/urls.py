@@ -26,6 +26,7 @@ from .views import (
     AdminOrderMarkCompletedView, AdminUserAdjustBalanceView,
     AdminVerifyTransactionView, AdminFailTransactionView, AdminOrderRefillView,
     AdminPendingDepositsView, AdminPendingDepositsCountView,
+    AdminAllTransactionsView,
     AdminTicketListView, AdminTicketDetailView, AdminPendingTicketsCountView
 )
 from .views.payment_views import (
@@ -98,6 +99,7 @@ urlpatterns = [
     path('admin/users/<uuid:user_id>/toggle-active/', AdminUserToggleActiveView.as_view(), name='admin-user-toggle-active'),
     path('admin/users/<uuid:user_id>/adjust-balance/', AdminUserAdjustBalanceView.as_view(), name='admin-user-adjust-balance'),
     path('admin/users/<uuid:user_id>/transactions/', AdminUserTransactionsView.as_view(), name='admin-user-transactions'),
+    path('admin/transactions/', AdminAllTransactionsView.as_view(), name='admin-all-transactions'),
     path('admin/transactions/pending/', AdminPendingDepositsView.as_view(), name='admin-pending-transactions'),
     path('admin/transactions/pending/count/', AdminPendingDepositsCountView.as_view(), name='admin-pending-transactions-count'),
     path('admin/transactions/<uuid:transaction_id>/verify/', AdminVerifyTransactionView.as_view(), name='admin-transaction-verify'),
