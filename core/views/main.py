@@ -1272,6 +1272,58 @@ class AdminFailTransactionView(APIView):
         return Response({'message': 'Transaction marked as failed and proof deleted'})
 
 
+class AdminAllTransactionsView(APIView):
+    """Admin view to list all transactions across all users, with filtering."""
+    permission_classes = [IsAdminUser]
+
+    def get(self, request):
+        qs = Transaction.objects.select_related('wallet__user').order_by('-created_at')
+
+        # Filters
+        gateway = request.query_params.get('gateway')
+        if gateway:
+            qs = qs.filter(payment_gateway=gateway)
+
+        tx_status = request.query_params.get('status')
+        if tx_status:
+            qs = qs.filter(status=tx_status)
+
+        search = request.query_params.get('search', '').strip()
+        if search:
+            from django.db.models import Q
+            qs = qs.filter(
+                Q(wallet__user__email__icontains=search) |
+                Q(wallet__user__username__icontains=search) |
+                Q(payment_reference__icontains=search)
+            )
+
+        # Pagination
+        limit = min(int(request.query_params.get('limit', 50)), 200)
+        offset = int(request.query_params.get('offset', 0))
+        total = qs.count()
+        qs = qs[offset:offset + limit]
+
+        data = []
+        for tx in qs:
+            user = tx.wallet.user
+            data.append({
+                'id': str(tx.id),
+                'user_email': user.email,
+                'user_username': user.username,
+                'type': tx.type,
+                'amount': str(tx.amount),
+                'description': tx.description,
+                'status': tx.status,
+                'payment_gateway': tx.payment_gateway,
+                'payment_reference': tx.payment_reference,
+                'has_proof': bool(tx.payment_proof),
+                'created_at': tx.created_at.isoformat(),
+            })
+
+        return Response({'transactions': data, 'total': total, 'limit': limit, 'offset': offset})
+
+
+
 class AdminDeleteLogView(APIView):
     """Delete an individual API log entry."""
     permission_classes = [IsAdminUser]
