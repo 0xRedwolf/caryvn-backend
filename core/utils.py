@@ -1,11 +1,12 @@
 from django.utils import timezone
-from core.models import Order
-from core.services.smm_provider import smm_provider, SMMProviderError
+from core.models import Order, Provider
+from core.services.smm_provider import get_provider_client, SMMProviderError
 import time
 
-def sync_active_orders():
+def sync_active_orders(provider_slug=None):
     """
-    Syncs all pending/processing/in_progress orders with the SMM provider.
+    Syncs all pending/processing/in_progress orders with their respective SMM providers.
+    Optionally scoped to a single provider by slug.
     Returns a dict with updated count and error count.
     """
     orders = Order.objects.filter(
@@ -15,7 +16,11 @@ def sync_active_orders():
             Order.Status.PROCESSING,
             Order.Status.IN_PROGRESS
         ]
-    ).exclude(provider_order_id='')
+    ).exclude(provider_order_id='').select_related('provider')
+    
+    # Optionally filter by provider
+    if provider_slug:
+        orders = orders.filter(provider__slug=provider_slug)
     
     updated = 0
     errors = 0
@@ -32,17 +37,22 @@ def sync_active_orders():
         'failed': Order.Status.FAILED,
     }
 
+    # Cache provider clients to avoid recreating for each order
+    _client_cache = {}
+
     for order in orders:
         try:
-            # We skip the sleep here to make the API response faster, 
-            # or we keep it small. But for a synchronous API request, 
-            # iterating many orders with sleep is bad. 
-            # Ideally this should be a background task. 
-            # But user asked for a button. 
-            # We'll remove the sleep for the view, but maybe keep it for large batches?
-            # Let's keep a tiny sleep to be safe, or just rely on requests latency.
+            # Get or create client for this order's provider
+            provider = order.provider
+            if not provider:
+                errors += 1
+                continue
             
-            result = smm_provider.get_order_status(
+            if provider.pk not in _client_cache:
+                _client_cache[provider.pk] = get_provider_client(provider)
+            client = _client_cache[provider.pk]
+            
+            result = client.get_order_status(
                 order.provider_order_id, user=order.user, order=order
             )
             

@@ -164,6 +164,28 @@ class AdminAnalyticsView(APIView):
             .aggregate(total=Sum('amount'))['total'] or Decimal('0')
         )
 
+        # --- Revenue & Profit by Provider ---
+        revenue_by_provider_query = (
+            all_orders.exclude(status__in=[Order.Status.CANCELED, Order.Status.REFUNDED, Order.Status.FAILED])
+            .values('provider__name')
+            .annotate(
+                total_revenue=Sum('charge'),
+                total_profit=Sum('profit'),
+                order_count=Count('id')
+            )
+            .order_by('-total_revenue')
+        )
+        
+        revenue_by_provider = [
+            {
+                'provider': item['provider__name'] or 'Unknown',
+                'revenue': float(item['total_revenue'] or 0),
+                'profit': float(item['total_profit'] or 0),
+                'orders': item['order_count'],
+            }
+            for item in revenue_by_provider_query
+        ]
+
         return Response({
             'summary': {
                 'total_revenue': float(total_revenue),
@@ -181,4 +203,5 @@ class AdminAnalyticsView(APIView):
             'user_growth_chart': user_data,
             'popular_services': services_data,
             'order_status': status_data,
+            'revenue_by_provider': revenue_by_provider,
         })

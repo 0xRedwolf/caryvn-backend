@@ -245,6 +245,36 @@ class Transaction(models.Model):
         return f"{self.type} - {self.amount} ({self.wallet.user.email})"
 
 
+class Provider(models.Model):
+    """SMM Provider (upstream panel) for multi-provider support."""
+    
+    name = models.CharField(max_length=100)  # e.g. "EngainsMedia", "SMMRocket"
+    slug = models.SlugField(unique=True)  # e.g. "engainsmedia", "smmrocket"
+    api_url = models.URLField()
+    api_key = models.CharField(max_length=200)
+    currency = models.CharField(max_length=3, default='NGN')  # NGN, USD, etc.
+    exchange_rate = models.DecimalField(
+        max_digits=10, decimal_places=2, default=Decimal('1.00'),
+        help_text='Conversion rate to NGN. Set 1.00 for NGN providers.'
+    )
+    is_active = models.BooleanField(default=True, help_text='Master on/off switch')
+    show_inactive_services = models.BooleanField(
+        default=False,
+        help_text='When enabled, inactive services from this provider are visible to users'
+    )
+    sort_order = models.IntegerField(default=0)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+    
+    class Meta:
+        verbose_name = 'Provider'
+        verbose_name_plural = 'Providers'
+        ordering = ['sort_order', 'name']
+    
+    def __str__(self):
+        return self.name
+
+
 class ServiceCategory(models.Model):
     """Service category for organizing services."""
     
@@ -266,14 +296,16 @@ class ServiceCategory(models.Model):
 class Service(models.Model):
     """SMM service (cached from provider)."""
     
-    provider_id = models.IntegerField(unique=True)  # ID from SMM provider
+    provider = models.ForeignKey(Provider, on_delete=models.CASCADE, null=True, blank=True, related_name='services')
+    external_id = models.IntegerField()  # Service ID from the upstream SMM provider (unique per provider)
     name = models.CharField(max_length=255)
     category = models.ForeignKey(ServiceCategory, on_delete=models.SET_NULL, null=True, blank=True, related_name='services')
     category_name = models.CharField(max_length=100, blank=True)  # Raw category from provider
     
     # Pricing
-    provider_rate = models.DecimalField(max_digits=10, decimal_places=4)  # Cost per 1000
-    user_rate = models.DecimalField(max_digits=10, decimal_places=4)  # Price per 1000 (with markup)
+    provider_rate = models.DecimalField(max_digits=10, decimal_places=4)  # Cost per 1000 (in provider's currency)
+    provider_rate_ngn = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True)  # Cost per 1000 converted to NGN
+    user_rate = models.DecimalField(max_digits=10, decimal_places=4)  # Price per 1000 (with markup, in NGN)
     
     # Limits
     min_quantity = models.IntegerField(default=10)
@@ -288,6 +320,7 @@ class Service(models.Model):
     
     # Status
     is_active = models.BooleanField(default=True)
+    provider_is_active = models.BooleanField(default=True, help_text="True if the upstream provider currently offers this service")
     is_featured = models.BooleanField(default=False)
     
     # Timestamps
@@ -298,9 +331,10 @@ class Service(models.Model):
         ordering = ['category_name', 'name']
         verbose_name = 'Service'
         verbose_name_plural = 'Services'
+        unique_together = [('provider', 'external_id')]
     
     def __str__(self):
-        return f"[{self.provider_id}] {self.name}"
+        return f"[{self.external_id}] {self.name}"
     
     def calculate_price(self, quantity):
         """Calculate price for given quantity."""
@@ -322,6 +356,7 @@ class MarkupRule(models.Model):
     # Target (based on level)
     platform = models.CharField(max_length=50, blank=True)  # For platform level
     category = models.ForeignKey(ServiceCategory, on_delete=models.CASCADE, null=True, blank=True)
+    category_name = models.CharField(max_length=255, blank=True)  # For category level (Multi-provider)
     service = models.ForeignKey(Service, on_delete=models.CASCADE, null=True, blank=True)
     
     # Markup type
@@ -360,6 +395,7 @@ class Order(models.Model):
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='orders')
     service = models.ForeignKey(Service, on_delete=models.SET_NULL, null=True, related_name='orders')
+    provider = models.ForeignKey(Provider, on_delete=models.SET_NULL, null=True, blank=True, related_name='orders')
     
     # Provider order info
     provider_order_id = models.CharField(max_length=100, blank=True)  # ID from SMM provider
@@ -372,13 +408,14 @@ class Order(models.Model):
     
     # Pricing
     provider_rate = models.DecimalField(max_digits=10, decimal_places=4)
+    provider_rate_ngn = models.DecimalField(max_digits=10, decimal_places=4, null=True, blank=True) # Cost in NGN
     user_rate = models.DecimalField(max_digits=10, decimal_places=4)
     charge = models.DecimalField(max_digits=10, decimal_places=4)  # Total charged
     profit = models.DecimalField(max_digits=10, decimal_places=4, default=Decimal('0'))
     currency = models.CharField(max_length=3, default='NGN')
     
     # Status
-    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING)
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True)
     status_updated_at = models.DateTimeField(auto_now=True)
     
     # Timestamps
@@ -390,13 +427,19 @@ class Order(models.Model):
         ordering = ['-created_at']
         verbose_name = 'Order'
         verbose_name_plural = 'Orders'
+        indexes = [
+            models.Index(fields=['user', 'status'], name='order_user_status_idx'),
+            models.Index(fields=['user', '-created_at'], name='order_user_date_idx'),
+        ]
     
     def __str__(self):
         return f"Order {str(self.id)[:8]} - {self.status}"
     
     def calculate_profit(self):
         """Calculate profit for this order."""
-        provider_cost = (self.provider_rate / 1000) * self.quantity
+        # Use NGN rate if available, fallback to raw rate
+        rate_to_use = self.provider_rate_ngn if self.provider_rate_ngn is not None else self.provider_rate
+        provider_cost = (rate_to_use / 1000) * self.quantity
         self.profit = self.charge - provider_cost
         return self.profit
 
@@ -468,6 +511,7 @@ class APILog(models.Model):
     error = models.TextField(blank=True)
     duration_ms = models.IntegerField(null=True)  # Request duration in milliseconds
     
+    provider = models.ForeignKey(Provider, on_delete=models.SET_NULL, null=True, blank=True)
     user = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, blank=True)
     order = models.ForeignKey(Order, on_delete=models.SET_NULL, null=True, blank=True)
     
@@ -513,9 +557,10 @@ class UserActivity(models.Model):
 
 class SiteSettings(models.Model):
     """Singleton model for site-wide settings."""
+    # NOTE: show_inactive_services moved to per-provider Provider.show_inactive_services
     show_inactive_services = models.BooleanField(
         default=False,
-        help_text='When enabled, inactive services are also visible to users'
+        help_text='Legacy field — inactive service visibility is now per-provider'
     )
     
     # Manual Bank Deposit Settings
@@ -529,6 +574,9 @@ class SiteSettings(models.Model):
     crypto_usdt_trc20 = models.CharField(max_length=200, blank=True, help_text='USDT-TRC20 wallet address')
     crypto_usdt_bep20 = models.CharField(max_length=200, blank=True, help_text='USDT-BEP20 wallet address')
     crypto_sol = models.CharField(max_length=200, blank=True, help_text='SOL wallet address')
+    
+    # Financial Settings
+    min_topup_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('1000.00'), help_text='Minimum allowed top-up amount')
 
     class Meta:
         verbose_name = 'Site Settings'

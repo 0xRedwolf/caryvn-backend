@@ -25,7 +25,7 @@ class PricingService:
         Calculate the user-facing rate with markup applied.
         
         Args:
-            provider_rate: Base rate from provider (per 1000)
+            provider_rate: Base rate (per 1000) — should already be in NGN
             service: Service object (optional)
             category_name: Category name for category-level markup
             platform: Platform name for platform-level markup
@@ -47,41 +47,36 @@ class PricingService:
         if not platform and category_name:
             platform = PricingService._detect_platform(category_name)
         
-        applied_percentage = Decimal('0')
-        applied_fixed = Decimal('0')
-        
         for rule in rules:
+            applies = False
+            
             if rule.level == MarkupRule.Level.SERVICE and service:
                 if rule.service_id == service.id:
-                    # Service-specific takes precedence - use directly
-                    if rule.fixed_addition > 0:
-                        return provider_rate + rule.fixed_addition
-                    applied_percentage = max(applied_percentage, rule.percentage)
+                    applies = True
                     
             elif rule.level == MarkupRule.Level.CATEGORY:
                 if category and rule.category_id == category.id:
-                    applied_percentage = max(applied_percentage, rule.percentage)
-                    applied_fixed = max(applied_fixed, rule.fixed_addition)
+                    applies = True
+                elif category_name and rule.category_name and rule.category_name.lower() == category_name.lower():
+                    applies = True
                     
             elif rule.level == MarkupRule.Level.PLATFORM:
                 if platform and rule.platform.lower() == platform.lower():
-                    applied_percentage = max(applied_percentage, rule.percentage)
-                    applied_fixed = max(applied_fixed, rule.fixed_addition)
+                    applies = True
                     
             elif rule.level == MarkupRule.Level.GLOBAL:
-                # Global applies if nothing else matched
-                if applied_percentage == 0:
-                    applied_percentage = rule.percentage
-                if applied_fixed == 0:
-                    applied_fixed = rule.fixed_addition
+                applies = True
+                
+            if applies:
+                # The highest priority matching rule wins completely.
+                if rule.percentage > 0:
+                    final_rate = final_rate * (1 + rule.percentage / 100)
+                if rule.fixed_addition > 0:
+                    final_rate = final_rate + rule.fixed_addition
+                
+                # Exit immediately since rules are ordered by priority descending
+                return final_rate.quantize(Decimal('0.0001'))
         
-        # Apply markup
-        if applied_percentage > 0:
-            final_rate = final_rate * (1 + applied_percentage / 100)
-        if applied_fixed > 0:
-            final_rate = final_rate + applied_fixed
-        
-        # Round to 4 decimal places
         return final_rate.quantize(Decimal('0.0001'))
     
     @staticmethod
@@ -99,63 +94,98 @@ class PricingService:
         return ''
     
     @staticmethod
-    def sync_service_prices(services_data: list) -> int:
+    def sync_service_prices(services_data: list, provider=None) -> int:
         """
         Sync services from provider and apply markup.
+        Scoped to a specific provider so different providers don't interfere.
         
         Args:
             services_data: List of service dicts from provider
+            provider: Provider model instance (required for multi-provider)
         
         Returns:
             Number of services synced
         """
         count = 0
-        synced_provider_ids = []
+        synced_external_ids = []
+        
+        # Determine exchange rate (1.0 for NGN providers, custom for USD etc.)
+        exchange_rate = Decimal('1.00')
+        if provider and provider.exchange_rate:
+            exchange_rate = provider.exchange_rate
         
         for svc in services_data:
-            provider_id = svc.get('service')
-            if not provider_id:
+            external_id = svc.get('service')
+            if not external_id:
                 continue
             
-            synced_provider_ids.append(provider_id)
-            provider_rate = Decimal(str(svc.get('rate', '0')))
+            synced_external_ids.append(external_id)
+            provider_rate_raw = Decimal(str(svc.get('rate', '0')))
             category_name = svc.get('category', '')
             
-            # Calculate user rate with markup
+            # Convert provider rate to NGN
+            provider_rate_ngn = (provider_rate_raw * exchange_rate).quantize(Decimal('0.0001'))
+            
+            # Calculate user rate with markup (applied to NGN rate)
             user_rate = PricingService.calculate_user_rate(
-                provider_rate=provider_rate,
+                provider_rate=provider_rate_ngn,
                 category_name=category_name
             )
             
-            # Update or create service
-            defaults = {
+            # Build lookup kwargs — scope by provider if available
+            lookup = {'external_id': external_id}
+            if provider:
+                lookup['provider'] = provider
+            
+            # Prepare fields from provider
+            update_fields = {
                 'name': svc.get('name', ''),
                 'category_name': category_name,
-                'provider_rate': provider_rate,
+                'provider_rate': provider_rate_raw,  # Original rate in provider's currency
+                'provider_rate_ngn': provider_rate_ngn,  # Converted to NGN
                 'user_rate': user_rate,
                 'min_quantity': int(svc.get('min', 10)),
                 'max_quantity': int(svc.get('max', 10000)),
                 'service_type': svc.get('type', 'Default'),
                 'has_refill': svc.get('refill', False),
                 'has_cancel': svc.get('cancel', False),
-                'is_active': True,  # Provider returned it, so it's available
+                'provider_is_active': True,  # The provider returned it, so it is active on their end
             }
             
-            Service.objects.update_or_create(
-                provider_id=provider_id,
-                defaults=defaults
-            )
+            try:
+                # If it exists, update it but DO NOT touch is_active 
+                # to preserve admin's manual curation.
+                service_obj = Service.objects.get(**lookup)
+                for k, v in update_fields.items():
+                    setattr(service_obj, k, v)
+                service_obj.save()
+            except Service.DoesNotExist:
+                # If it's a new service, create it disabled by default
+                # so the admin can review and manually activate it.
+                creation_kwargs = {**lookup, **update_fields, 'is_active': False}
+                if provider:
+                    creation_kwargs['provider'] = provider
+                Service.objects.create(**creation_kwargs)
             
             count += 1
         
-        # Auto-deactivate services the provider no longer offers
-        if synced_provider_ids:
-            stale = Service.objects.exclude(provider_id__in=synced_provider_ids).filter(is_active=True)
-            stale_count = stale.count()
-            stale.update(is_active=False)
+        # Auto-deactivate services the provider no longer offers (scoped to this provider only)
+        if synced_external_ids:
+            stale_qs = Service.objects.exclude(external_id__in=synced_external_ids).filter(provider_is_active=True)
+            if provider:
+                stale_qs = stale_qs.filter(provider=provider)
+            stale_count = stale_qs.count()
+            
+            # If a service is no longer offered by the provider, mark it as dead upstream 
+            # AND force the local `is_active` to False so users don't buy dead services.
+            stale_qs.update(provider_is_active=False, is_active=False)
+            
             if stale_count > 0:
                 import logging
-                logging.getLogger(__name__).info(f'Auto-deactivated {stale_count} services no longer offered by provider')
+                provider_name = provider.name if provider else 'default'
+                logging.getLogger(__name__).info(
+                    f'Auto-deactivated {stale_count} services no longer offered by {provider_name}'
+                )
         
         return count
     
@@ -176,6 +206,37 @@ class PricingService:
         provider_cost = (provider_rate / 1000) * quantity
         user_charge = (user_rate / 1000) * quantity
         return (user_charge - provider_cost).quantize(Decimal('0.0001'))
+
+    @staticmethod
+    def recalculate_all_service_prices() -> int:
+        """
+        Recalculate user_rate for all existing services using bulk_update.
+        Called when markup rules change.
+        
+        Returns:
+            Number of services whose prices were updated
+        """
+        services = list(Service.objects.select_related('provider').all())
+        to_update = []
+        
+        for svc in services:
+            # Use NGN rate if available, fallback to raw rate (legacy/edge cases)
+            base_rate = svc.provider_rate_ngn if svc.provider_rate_ngn is not None else svc.provider_rate
+            
+            new_user_rate = PricingService.calculate_user_rate(
+                provider_rate=base_rate,
+                service=svc,
+                category_name=svc.category_name
+            )
+            
+            if svc.user_rate != new_user_rate:
+                svc.user_rate = new_user_rate
+                to_update.append(svc)
+        
+        if to_update:
+            Service.objects.bulk_update(to_update, ['user_rate'])
+                
+        return len(to_update)
 
 
 # Singleton instance

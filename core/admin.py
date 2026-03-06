@@ -5,7 +5,7 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from .models import (
     User, Wallet, Transaction, ServiceCategory, Service,
-    MarkupRule, Order, Ticket, TicketReply, APILog
+    MarkupRule, Order, Ticket, TicketReply, APILog, Provider
 )
 
 
@@ -61,11 +61,19 @@ class ServiceCategoryAdmin(admin.ModelAdmin):
     prepopulated_fields = {'slug': ('name',)}
 
 
+@admin.register(Provider)
+class ProviderAdmin(admin.ModelAdmin):
+    list_display = ('name', 'slug', 'currency', 'exchange_rate', 'is_active', 'sort_order')
+    list_filter = ('is_active', 'currency')
+    search_fields = ('name', 'slug')
+    readonly_fields = ('created_at', 'updated_at')
+
+
 @admin.register(Service)
 class ServiceAdmin(admin.ModelAdmin):
-    list_display = ('provider_id', 'name', 'category_name', 'provider_rate', 'user_rate', 'is_active', 'is_featured')
-    list_filter = ('is_active', 'is_featured', 'has_refill', 'has_cancel', 'category_name')
-    search_fields = ('name', 'provider_id')
+    list_display = ('external_id', 'name', 'provider', 'category_name', 'provider_rate', 'user_rate', 'is_active', 'is_featured')
+    list_filter = ('is_active', 'is_featured', 'has_refill', 'has_cancel', 'category_name', 'provider')
+    search_fields = ('name', 'external_id')
     readonly_fields = ('last_synced', 'created_at')
 
 
@@ -122,13 +130,18 @@ class OrderAdmin(admin.ModelAdmin):
     
     @admin.action(description='🔁 Retry failed orders with provider')
     def retry_with_provider(self, request, queryset):
-        from .services.smm_provider import smm_provider, SMMProviderError
+        from .services.smm_provider import get_provider_client, SMMProviderError
         retried = 0
         failed = 0
-        for order in queryset.filter(provider_order_id='', status__in=('pending', 'failed')):
+        for order in queryset.filter(provider_order_id='', status__in=('pending', 'failed')).select_related('service', 'provider'):
             try:
-                result = smm_provider.create_order(
-                    service_id=order.service.provider_id,
+                if not order.provider:
+                    self.message_user(request, f'❌ Order #{str(order.id)[:8]}: no provider configured', level='error')
+                    failed += 1
+                    continue
+                client = get_provider_client(order.provider)
+                result = client.create_order(
+                    service_id=order.service.external_id,
                     link=order.link,
                     quantity=order.quantity,
                     user=order.user,
@@ -149,11 +162,14 @@ class OrderAdmin(admin.ModelAdmin):
     
     @admin.action(description='📊 Check order status from provider')
     def check_provider_status(self, request, queryset):
-        from .services.smm_provider import smm_provider, SMMProviderError
+        from .services.smm_provider import get_provider_client, SMMProviderError
         updated = 0
-        for order in queryset.exclude(provider_order_id=''):
+        for order in queryset.exclude(provider_order_id='').select_related('provider'):
             try:
-                result = smm_provider.get_order_status(order.provider_order_id, user=order.user, order=order)
+                if not order.provider:
+                    continue
+                client = get_provider_client(order.provider)
+                result = client.get_order_status(order.provider_order_id, user=order.user, order=order)
                 if 'status' in result:
                     provider_status = result['status'].lower()
                     status_map = {

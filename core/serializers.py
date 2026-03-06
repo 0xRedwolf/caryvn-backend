@@ -85,24 +85,26 @@ class ServiceCategorySerializer(serializers.ModelSerializer):
 
 class ServiceSerializer(serializers.ModelSerializer):
     category = ServiceCategorySerializer(read_only=True)
+    provider_name = serializers.CharField(source='provider.name', read_only=True, default='')
     
     class Meta:
         model = Service
-        fields = ('id', 'provider_id', 'name', 'category', 'category_name',
+        fields = ('id', 'external_id', 'name', 'category', 'category_name',
                   'user_rate', 'min_quantity', 'max_quantity', 'service_type',
                   'has_refill', 'has_cancel', 'average_time', 'description',
-                  'is_featured')
+                  'is_featured', 'provider_name')
 
 
 class ServiceListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for service lists."""
     avg_completion_time = serializers.SerializerMethodField()
+    provider_name = serializers.CharField(source='provider.name', read_only=True, default='')
 
     class Meta:
         model = Service
-        fields = ('id', 'provider_id', 'name', 'category_name', 'user_rate',
+        fields = ('id', 'external_id', 'name', 'category_name', 'user_rate',
                   'min_quantity', 'max_quantity', 'has_refill', 'has_cancel',
-                  'is_featured', 'is_active', 'avg_completion_time')
+                  'is_featured', 'is_active', 'provider_is_active', 'avg_completion_time', 'provider_name')
 
     def get_avg_completion_time(self, obj):
         """Calculate average completion time from the last 20 completed orders."""
@@ -145,7 +147,7 @@ class OrderCreateSerializer(serializers.Serializer):
     
     def validate(self, attrs):
         try:
-            service = Service.objects.get(provider_id=attrs['service_id'], is_active=True)
+            service = Service.objects.get(id=attrs['service_id'], is_active=True)
         except Service.DoesNotExist:
             raise serializers.ValidationError({"service_id": "Service not found or inactive."})
         
@@ -165,15 +167,38 @@ class OrderCreateSerializer(serializers.Serializer):
 
 class OrderSerializer(serializers.ModelSerializer):
     service_name = serializers.CharField(source='service.name', read_only=True)
-    service_id = serializers.IntegerField(source='service.provider_id', read_only=True)
+    service_id = serializers.IntegerField(source='service.id', read_only=True)
     service_has_refill = serializers.BooleanField(source='service.has_refill', read_only=True)
+    provider_name = serializers.CharField(source='provider.name', read_only=True, default='')
+    avg_completion_time = serializers.SerializerMethodField()
     
     class Meta:
         model = Order
         fields = ('id', 'service_id', 'service_name', 'link', 'quantity',
                   'charge', 'status', 'start_count', 'remains', 'created_at', 'completed_at',
-                  'service_has_refill')
+                  'service_has_refill', 'provider_name', 'avg_completion_time')
         read_only_fields = fields
+
+    def get_avg_completion_time(self, obj):
+        # We can reuse the logic from ServiceListSerializer by instantiating it,
+        # or just duplicate the logic concisely. Doing it concisely:
+        from .models import Order
+        recent = (
+            Order.objects
+            .filter(service=obj.service, status='completed', completed_at__isnull=False)
+            .order_by('-completed_at')
+            .values_list('created_at', 'completed_at')[:20]
+        )
+        if not recent:
+            return None
+
+        total_seconds = sum((completed - created).total_seconds() for created, completed in recent)
+        avg_seconds = total_seconds / len(recent)
+
+        if avg_seconds < 60: return "~less than a minute"
+        elif avg_seconds < 3600: return f"~{round(avg_seconds / 60)} minute{'s' if round(avg_seconds / 60) != 1 else ''}"
+        elif avg_seconds < 86400: return f"~{round(avg_seconds / 3600)} hour{'s' if round(avg_seconds / 3600) != 1 else ''}"
+        else: return f"~{round(avg_seconds / 86400)} day{'s' if round(avg_seconds / 86400) != 1 else ''}"
 
 
 class OrderDetailSerializer(serializers.ModelSerializer):
@@ -248,13 +273,14 @@ class AdminOrderSerializer(serializers.ModelSerializer):
     user_email = serializers.CharField(source='user.email', read_only=True)
     service_name = serializers.CharField(source='service.name', read_only=True)
     service_has_refill = serializers.BooleanField(source='service.has_refill', read_only=True)
+    provider_name = serializers.CharField(source='provider.name', read_only=True, default='')
     
     class Meta:
         model = Order
         fields = ('id', 'user_email', 'service_name', 'link', 'quantity',
                   'provider_rate', 'user_rate', 'charge', 'profit', 'status',
                   'provider_order_id', 'start_count', 'remains', 'created_at',
-                  'service_has_refill')
+                  'service_has_refill', 'provider_name')
 
 
 class AdminUserSerializer(serializers.ModelSerializer):

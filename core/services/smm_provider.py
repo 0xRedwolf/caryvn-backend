@@ -1,6 +1,7 @@
 """
 SMM Provider API integration service.
 Handles all communication with external SMM Panel API v2.
+Supports multiple providers via get_provider_client() factory.
 """
 import time
 import logging
@@ -11,10 +12,6 @@ from django.conf import settings
 from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
-
-# Cache keys
-SERVICES_CACHE_KEY = 'smm_provider_services'
-BALANCE_CACHE_KEY = 'smm_provider_balance'
 
 
 class SMMProviderError(Exception):
@@ -32,9 +29,20 @@ class SMMProvider:
     - Response parsing
     """
     
-    def __init__(self):
-        self.api_url = settings.SMM_PROVIDER_URL
-        self.api_key = settings.SMM_PROVIDER_KEY
+    def __init__(self, api_url: str = '', api_key: str = '', provider_slug: str = 'default', provider_id: int = None):
+        """
+        Initialize provider client.
+        
+        Args:
+            api_url: The provider API endpoint URL
+            api_key: The provider API key
+            provider_slug: Slug for cache key namespacing
+            provider_id: Database ID of the Provider model (for API logging)
+        """
+        self.api_url = api_url
+        self.api_key = api_key
+        self.provider_slug = provider_slug
+        self.provider_id = provider_id
         self.timeout = 30  # seconds
         self.max_retries = 3
     
@@ -108,7 +116,7 @@ class SMMProvider:
         
         # Log the API call
         try:
-            APILog.objects.create(
+            log_kwargs = dict(
                 action=action,
                 request_data=logged_request,
                 response_data=response_data if isinstance(response_data, dict) else {'data': str(response_data)[:1000]},
@@ -116,8 +124,16 @@ class SMMProvider:
                 error=error_msg,
                 duration_ms=duration_ms,
                 user=user,
-                order=order
+                order=order,
             )
+            # Attach provider FK if we have an ID
+            if self.provider_id:
+                from core.models import Provider
+                try:
+                    log_kwargs['provider_id'] = self.provider_id
+                except Exception:
+                    pass
+            APILog.objects.create(**log_kwargs)
         except Exception as log_error:
             logger.error(f"Failed to log API call: {log_error}")
         
@@ -129,15 +145,17 @@ class SMMProvider:
     def get_services(self, force_refresh: bool = False) -> List[Dict[str, Any]]:
         """
         Fetch available services from provider.
-        Results are cached for SERVICE_CACHE_TTL seconds.
+        Results are cached per provider for SERVICE_CACHE_TTL seconds.
         
         Returns:
             List of service dictionaries
         """
+        cache_key = f'smm_provider_services_{self.provider_slug}'
+        
         if not force_refresh:
-            cached = cache.get(SERVICES_CACHE_KEY)
+            cached = cache.get(cache_key)
             if cached:
-                logger.debug("Returning cached services")
+                logger.debug(f"Returning cached services for {self.provider_slug}")
                 return cached
         
         # Demo mode - return mock data if no provider configured
@@ -149,16 +167,30 @@ class SMMProvider:
         # Parse response
         if isinstance(response, list):
             services = response
-        elif isinstance(response, dict) and 'error' in response:
-            logger.error(f"Provider error getting services: {response['error']}")
-            # Return cached or demo on error
-            cached = cache.get(SERVICES_CACHE_KEY)
-            return cached if cached else self._get_demo_services()
+        elif isinstance(response, dict):
+            # NEW LOGIC: Handle providers that return a dictionary with a stringified list in 'data'
+            if 'error' in response:
+                logger.error(f"Provider error getting services: {response['error']}")
+                cached = cache.get(cache_key)
+                return cached if cached else self._get_demo_services()
+            elif 'data' in response and isinstance(response['data'], str):
+                import json
+                try:
+                    # Sometimes the data string uses single quotes instead of double quotes
+                    data_str = response['data'].replace("'", '"')
+                    # Remove boolean literals that cause JSON errors and replace them
+                    data_str = data_str.replace("False", "false").replace("True", "true").replace("None", "null")
+                    services = json.loads(data_str)
+                except json.JSONDecodeError as e:
+                    logger.error(f"Failed to parse inner data string: {e}")
+                    services = []
+            else:
+                 services = []
         else:
             services = []
         
         # Cache the result
-        cache.set(SERVICES_CACHE_KEY, services, settings.SERVICE_CACHE_TTL)
+        cache.set(cache_key, services, settings.SERVICE_CACHE_TTL)
         
         return services
     
@@ -185,7 +217,7 @@ class SMMProvider:
         Place a new order with the provider.
         
         Args:
-            service_id: Provider service ID
+            service_id: Provider service ID (external_id)
             link: Target URL
             quantity: Order quantity
             comments: Optional custom comments (newline separated)
@@ -314,85 +346,22 @@ class SMMProvider:
                 "refill": False,
                 "cancel": False
             },
-            {
-                "service": 4,
-                "name": "TikTok Followers [Real] [Refill 30D]",
-                "type": "Default",
-                "category": "TikTok Followers",
-                "rate": "1.50",
-                "min": "50",
-                "max": "100000",
-                "refill": True,
-                "cancel": False
-            },
-            {
-                "service": 5,
-                "name": "YouTube Subscribers [Non-Drop]",
-                "type": "Default",
-                "category": "YouTube Subscribers",
-                "rate": "15.50",
-                "min": "50",
-                "max": "5000",
-                "refill": True,
-                "cancel": False
-            },
-            {
-                "service": 6,
-                "name": "YouTube Views [High Retention]",
-                "type": "Default",
-                "category": "YouTube Views",
-                "rate": "2.50",
-                "min": "500",
-                "max": "1000000",
-                "refill": False,
-                "cancel": True
-            },
-            {
-                "service": 7,
-                "name": "Facebook Page Likes [Refill 30D]",
-                "type": "Default",
-                "category": "Facebook Page Likes",
-                "rate": "2.40",
-                "min": "100",
-                "max": "50000",
-                "refill": True,
-                "cancel": False
-            },
-            {
-                "service": 8,
-                "name": "X/Twitter Followers [Real]",
-                "type": "Default",
-                "category": "Twitter Followers",
-                "rate": "3.00",
-                "min": "100",
-                "max": "25000",
-                "refill": True,
-                "cancel": False
-            },
-            {
-                "service": 9,
-                "name": "X/Twitter Likes [Fast]",
-                "type": "Default",
-                "category": "Twitter Likes",
-                "rate": "0.80",
-                "min": "10",
-                "max": "10000",
-                "refill": False,
-                "cancel": True
-            },
-            {
-                "service": 10,
-                "name": "Telegram Channel Members [Non-Drop]",
-                "type": "Default",
-                "category": "Telegram Members",
-                "rate": "1.20",
-                "min": "100",
-                "max": "100000",
-                "refill": True,
-                "cancel": False
-            }
         ]
 
 
-# Singleton instance
-smm_provider = SMMProvider()
+def get_provider_client(provider) -> SMMProvider:
+    """
+    Factory function: create an SMMProvider client from a Provider model instance.
+    
+    Args:
+        provider: A core.models.Provider instance
+    
+    Returns:
+        Configured SMMProvider client
+    """
+    return SMMProvider(
+        api_url=provider.api_url,
+        api_key=provider.api_key,
+        provider_slug=provider.slug,
+        provider_id=provider.pk,
+    )
