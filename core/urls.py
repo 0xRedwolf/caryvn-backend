@@ -21,13 +21,14 @@ from .views import (
     AdminOrderCancelRefundView, AdminOrderRetryView, AdminOrderCheckStatusView,
     AdminUserToggleActiveView, AdminUserTransactionsView, AdminSyncOrdersView,
     AdminDeleteLogView, AdminDeleteOrderView, AdminDeleteUserView,
-    AdminToggleServiceActiveView,
+    AdminToggleServiceActiveView, AdminBulkToggleServiceActiveView,
     SiteSettingsView, AdminToggleShowInactiveView,
     AdminOrderMarkCompletedView, AdminUserAdjustBalanceView,
     AdminVerifyTransactionView, AdminFailTransactionView, AdminOrderRefillView,
     AdminPendingDepositsView, AdminPendingDepositsCountView,
     AdminAllTransactionsView,
-    AdminTicketListView, AdminTicketDetailView, AdminPendingTicketsCountView
+    AdminTicketListView, AdminTicketDetailView, AdminPendingTicketsCountView,
+    AdminProviderListView, AdminUpdateProviderView, AdminServiceCategoryNamesView
 )
 from .views.payment_views import (
     InitiateTopupView, VerifyTopupView, SquadWebhookView,
@@ -85,6 +86,7 @@ urlpatterns = [
     path('admin/orders/', AdminOrderListView.as_view(), name='admin-orders'),
     path('admin/markup-rules/', AdminMarkupRuleView.as_view(), name='admin-markup-rules'),
     path('admin/markup-rules/<int:rule_id>/', AdminMarkupRuleView.as_view(), name='admin-markup-rule-detail'),
+    path('admin/service-categories/', AdminServiceCategoryNamesView.as_view(), name='admin-service-categories'),
     path('admin/logs/', AdminAPILogView.as_view(), name='admin-logs'),
     path('admin/sync-services/', AdminSyncServicesView.as_view(), name='admin-sync-services'),
     path('admin/sync-orders/', AdminSyncOrdersView.as_view(), name='admin-sync-orders'),
@@ -109,7 +111,13 @@ urlpatterns = [
     path('admin/logs/<int:log_id>/delete/', AdminDeleteLogView.as_view(), name='admin-log-delete'),
     path('admin/orders/<uuid:order_id>/delete/', AdminDeleteOrderView.as_view(), name='admin-order-delete'),
     path('admin/services/<int:service_id>/toggle-active/', AdminToggleServiceActiveView.as_view(), name='admin-service-toggle-active'),
+    path('admin/services/bulk-toggle-active/', AdminBulkToggleServiceActiveView.as_view(), name='admin-service-bulk-toggle-active'),
     path('admin/settings/toggle-show-inactive/', AdminToggleShowInactiveView.as_view(), name='admin-toggle-show-inactive'),
+    
+    # Provider management endpoints
+    path('admin/providers/', AdminProviderListView.as_view(), name='admin-providers'),
+    path('admin/providers/<slug:provider_slug>/', AdminUpdateProviderView.as_view(), name='admin-provider-update'),
+    path('admin/providers/<slug:provider_slug>/toggle-show-inactive/', AdminToggleShowInactiveView.as_view(), name='admin-provider-toggle-show-inactive'),
 
     # Admin Ticket endpoints
     path('admin/tickets/', AdminTicketListView.as_view(), name='admin-tickets'),

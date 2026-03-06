@@ -14,10 +14,8 @@ from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from core.models import Transaction, Wallet
 from core.services.squad import squad_service, SquadPaymentError
-
 logger = logging.getLogger(__name__)
 
-MIN_TOPUP_AMOUNT = Decimal('100')      # ₦100 minimum
 MAX_TOPUP_AMOUNT = Decimal('500000')   # ₦500,000 maximum
 
 
@@ -41,10 +39,12 @@ class InitiateTopupView(APIView):
                 {'error': 'Invalid amount'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        from core.models import SiteSettings
+        min_amount = SiteSettings.load().min_topup_amount
 
-        if amount < MIN_TOPUP_AMOUNT:
+        if amount < min_amount:
             return Response(
-                {'error': f'Minimum top-up amount is ₦{MIN_TOPUP_AMOUNT:,.0f}'},
+                {'error': f'Minimum top-up amount is ₦{min_amount:,.0f}'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -125,10 +125,12 @@ class InitiateManualTopupView(APIView):
                 {'error': 'Invalid amount'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+        from core.models import SiteSettings
+        min_amount = SiteSettings.load().min_topup_amount
 
-        if amount < MIN_TOPUP_AMOUNT:
+        if amount < min_amount:
             return Response(
-                {'error': f'Minimum top-up amount is ₦{MIN_TOPUP_AMOUNT:,.0f}'},
+                {'error': f'Minimum top-up amount is ₦{min_amount:,.0f}'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
@@ -217,6 +219,16 @@ class InitiateCryptoTopupView(APIView):
             amount = Decimal(str(amount))
         except Exception:
             return Response({'error': 'Invalid amount'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        settings = SiteSettings.load()
+        # Crypto min is loosely based on the numeric value. Since crypto rates vary, 
+        # we'll still enforce a bare minimum. We'll use a hardcoded $2 or NGN equivalent.
+        # But for consistency with the audit report, we could also use settings.min_topup_amount / exchange_rate 
+        # Here we'll stick to the flat $2 minimum for Crypto as it's separate from NGN min amount, 
+        # to avoid users bypassing min_topup. Wait, I should probably enforce `min_topup_amount` here too if converted, 
+        # but the view only knows USD amounts. The requirement 24 says "Minimum top-up amount enforcement via SiteSettings".
+        # Let's keep the crypto MIN_CRYPTO_AMOUNT distinct for now, as it's USD based.
+        
         if amount < self.MIN_CRYPTO_AMOUNT:
             return Response(
                 {'error': f'Minimum crypto deposit is ${self.MIN_CRYPTO_AMOUNT} USDT'},

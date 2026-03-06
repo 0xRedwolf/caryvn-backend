@@ -4,10 +4,6 @@ API Views for Caryvn.
 import logging
 from decimal import Decimal
 
-logger = logging.getLogger(__name__)
-
-from core.services.email_service import email_service
-
 from rest_framework import viewsets, status, permissions
 from rest_framework.decorators import action
 from rest_framework.response import Response
@@ -23,7 +19,7 @@ from django.views.decorators.csrf import csrf_exempt
 
 from ..models import (
     Wallet, Transaction, Service, Order, Ticket, TicketReply, 
-    MarkupRule, APILog, SiteSettings
+    MarkupRule, APILog, SiteSettings, Provider
 )
 from ..serializers import (
     RegisterSerializer, LoginSerializer, UserSerializer, UserProfileUpdateSerializer,
@@ -33,11 +29,10 @@ from ..serializers import (
     TicketReplySerializer, TicketReplyCreateSerializer, MarkupRuleSerializer,
     APILogSerializer, AdminOrderSerializer, AdminUserSerializer
 )
-from ..services.smm_provider import smm_provider, SMMProviderError
-from ..services.pricing import pricing_service
+from ..services.smm_provider import SMMProviderError, get_provider_client
+from ..services.pricing import pricing_service, PricingService
 from ..services.email_service import email_service
 from ..utils import sync_active_orders
-import logging
 
 logger = logging.getLogger(__name__)
 
@@ -202,7 +197,7 @@ class HideTransactionView(APIView):
     def post(self, request, transaction_id):
         try:
             transaction = request.user.wallet.transactions.get(id=transaction_id)
-        except:
+        except Transaction.DoesNotExist:
             return Response({'error': 'Transaction not found'}, status=404)
         transaction.hidden_by_user = True
         transaction.save()
@@ -217,14 +212,20 @@ class ServiceListView(APIView):
     
     def get(self, request):
         # Get services from database (synced via admin endpoint)
-        services = Service.objects.all()
+        # Only include services from active providers
+        services = Service.objects.filter(
+            provider__is_active=True
+        ).select_related('provider')
         
-        # Only show active services to non-admin users
+        # Admin can see all services including inactive
         include_inactive = request.query_params.get('include_inactive', 'false').lower() == 'true'
-        settings = SiteSettings.load()
         if not (include_inactive and request.user.is_authenticated and request.user.is_staff):
-            if not settings.show_inactive_services:
-                services = services.filter(is_active=True)
+            # For normal users: show active services, plus inactive ones from providers that allow it
+            # BUT always exclude services that the provider no longer offers (provider_is_active=False)
+            from django.db.models import Q
+            services = services.filter(provider_is_active=True).filter(
+                Q(is_active=True) | Q(provider__show_inactive_services=True)
+            )
         
         # Filters
         platform = request.query_params.get('platform')
@@ -253,7 +254,7 @@ class ServiceDetailView(APIView):
     
     def get(self, request, service_id):
         try:
-            service = Service.objects.get(provider_id=service_id, is_active=True)
+            service = Service.objects.get(id=service_id, is_active=True)
             return Response(ServiceSerializer(service).data)
         except Service.DoesNotExist:
             return Response(
@@ -266,6 +267,8 @@ class ServiceDetailView(APIView):
 
 class OrderCreateView(APIView):
     """Create a new order."""
+    throttle_classes = [ScopedRateThrottle]
+    throttle_scope = 'orders'
     
     @transaction.atomic
     def post(self, request):
@@ -317,13 +320,15 @@ class OrderCreateView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        # Create order
+        # Create order (include provider reference)
         order = Order.objects.create(
             user=request.user,
             service=service,
+            provider=service.provider,
             link=link,
             quantity=quantity,
             provider_rate=service.provider_rate,
+            provider_rate_ngn=service.provider_rate_ngn, # NEW: Save the converted rate
             user_rate=service.user_rate,
             charge=charge,
             status=Order.Status.PENDING
@@ -336,24 +341,28 @@ class OrderCreateView(APIView):
         # Deduct from wallet (uses select_for_update internally for safety)
         wallet.charge(charge, f'Order #{str(order.id)[:8]} - {service.name}')
         
-        # Submit to provider
+        # Submit to provider (route to correct provider)
         provider_error = None
         try:
-            result = smm_provider.create_order(
-                service_id=service.provider_id,
-                link=link,
-                quantity=quantity,
-                comments=comments,
-                user=request.user,
-                order=order
-            )
-            
-            if 'order' in result:
-                order.provider_order_id = str(result['order'])
-                order.status = Order.Status.PROCESSING
-                order.save()
-            elif 'error' in result:
-                provider_error = str(result['error'])
+            if not service.provider:
+                provider_error = 'No provider configured for this service'
+            else:
+                client = get_provider_client(service.provider)
+                result = client.create_order(
+                    service_id=service.external_id,
+                    link=link,
+                    quantity=quantity,
+                    comments=comments,
+                    user=request.user,
+                    order=order
+                )
+                
+                if 'order' in result:
+                    order.provider_order_id = str(result['order'])
+                    order.status = Order.Status.PROCESSING
+                    order.save()
+                elif 'error' in result:
+                    provider_error = str(result['error'])
         except SMMProviderError as e:
             provider_error = str(e)
         
@@ -409,7 +418,7 @@ class HideOrderView(APIView):
     def post(self, request, order_id):
         try:
             order = request.user.orders.get(id=order_id)
-        except:
+        except Order.DoesNotExist:
             return Response({'error': 'Order not found'}, status=404)
         order.hidden_by_user = True
         order.save()
@@ -429,11 +438,12 @@ class OrderDetailView(APIView):
             )
         
         # Refresh status from provider if order is active
-        if order.provider_order_id and order.status in [
+        if order.provider_order_id and order.provider and order.status in [
             Order.Status.PENDING, Order.Status.PROCESSING, Order.Status.IN_PROGRESS
         ]:
             try:
-                status_result = smm_provider.get_order_status(
+                client = get_provider_client(order.provider)
+                status_result = client.get_order_status(
                     order.provider_order_id,
                     user=request.user,
                     order=order
@@ -473,9 +483,6 @@ class OrderDetailView(APIView):
         order.save()
 
 
-        order.save()
-
-
 class OrderRefillView(APIView):
     """User endpoint to request a refill for an eligible order."""
     
@@ -492,7 +499,10 @@ class OrderRefillView(APIView):
             return Response({'error': 'Order must be completed to request a refill.'}, status=status.HTTP_400_BAD_REQUEST)
             
         try:
-            result = smm_provider.create_refill(
+            if not order.provider:
+                return Response({'error': 'No provider configured for this order.'}, status=status.HTTP_400_BAD_REQUEST)
+            client = get_provider_client(order.provider)
+            result = client.create_refill(
                 order_id=order.provider_order_id,
                 user=request.user,
                 order=order
@@ -511,7 +521,7 @@ class OrderRefillView(APIView):
 
 class OrderCheckProviderBalanceView(APIView):
     """Silently check if the provider has enough balance to fulfill an order."""
-    
+    permission_classes = [permissions.IsAdminUser]
     def post(self, request):
         from decimal import Decimal
         try:
@@ -522,14 +532,18 @@ class OrderCheckProviderBalanceView(APIView):
                 return Response({'error': 'Missing service_id or quantity'}, status=status.HTTP_400_BAD_REQUEST)
                 
             try:
-                service = Service.objects.get(provider_id=service_id, is_active=True)
+                service = Service.objects.get(id=service_id, is_active=True)
             except Service.DoesNotExist:
                 return Response({'error': 'Service not found or inactive'}, status=status.HTTP_404_NOT_FOUND)
+            
+            if not service.provider:
+                return Response({'can_fulfill': False, 'message': 'No provider configured'})
                 
             qty = Decimal(str(quantity))
             provider_cost = (qty / Decimal('1000')) * service.provider_rate
             
-            balance_data = smm_provider.get_balance()
+            client = get_provider_client(service.provider)
+            balance_data = client.get_balance()
             if 'error' in balance_data and balance_data['error'] != 'Unknown error':
                 return Response({'can_fulfill': False, 'message': 'Provider API Error'})
                 
@@ -605,8 +619,21 @@ class TicketDetailView(APIView):
                     # Admin replied → notify the ticket owner
                     email_service.send_ticket_reply(ticket, reply, ticket.user)
                 else:
-                    # User replied → could notify admin, but skip for now
-                    pass
+                    # User replied → notify admin
+                    try:
+                        admin_email = User.objects.filter(is_staff=True).values_list('email', flat=True).first()
+                        if admin_email:
+                            email_service.send_email(
+                                to=admin_email,
+                                subject=f'[Support] New reply on ticket #{ticket.id}',
+                                body=(
+                                    f'User {request.user.email} replied to ticket: {ticket.subject}\n\n'
+                                    f'Message:\n{reply.message}\n\n'
+                                    f'Ticket ID: {ticket.id}'
+                                ),
+                            )
+                    except Exception as email_err:
+                        logger.warning(f'Could not notify admin of ticket reply: {email_err}')
             except Exception as e:
                 logger.error(f'Failed to send ticket reply email: {e}')
             
@@ -623,7 +650,7 @@ class IsAdminUser(permissions.BasePermission):
 
 class AdminTicketListView(APIView):
     """Admin endpoint to list all support tickets."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
         tickets = Ticket.objects.all().order_by(
@@ -646,7 +673,7 @@ class AdminTicketListView(APIView):
 
 class AdminPendingTicketsCountView(APIView):
     """Returns the count of currently pending/open support tickets."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
         count = Ticket.objects.filter(status__in=['pending', 'open']).count()
@@ -655,7 +682,7 @@ class AdminPendingTicketsCountView(APIView):
 
 class AdminTicketDetailView(APIView):
     """Admin endpoint to view, reply to, or close a specific ticket."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
 
     def get(self, request, ticket_id):
         try:
@@ -700,7 +727,7 @@ class AdminTicketDetailView(APIView):
 
 class AdminDashboardView(APIView):
     """Admin dashboard stats."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
     
     def get(self, request):
         from django.db.models import Sum, Count
@@ -738,11 +765,34 @@ class AdminDashboardView(APIView):
             status__in=['open', 'pending']
         ).count()
         
-        # Provider balance
-        try:
-            provider_balance = smm_provider.get_balance()
-        except:
-            provider_balance = {'balance': 'N/A'}
+        # Provider balances (all active providers) — cached for 2 minutes
+        from django.core.cache import cache
+        provider_balances = {}
+        for prov in Provider.objects.filter(is_active=True):
+            cache_key = f'provider_balance_{prov.slug}'
+            cached = cache.get(cache_key)
+            if cached is not None:
+                provider_balances[prov.slug] = cached
+            else:
+                try:
+                    client = get_provider_client(prov)
+                    bal = client.get_balance()
+                    entry = {
+                        'name': prov.name,
+                        'balance': bal.get('balance', 'N/A'),
+                        'currency': prov.currency,
+                    }
+                except Exception:
+                    entry = {
+                        'name': prov.name,
+                        'balance': 'N/A',
+                        'currency': prov.currency,
+                    }
+                cache.set(cache_key, entry, 120)
+                provider_balances[prov.slug] = entry
+        
+        # Keep legacy field for backwards compat
+        first_balance = next(iter(provider_balances.values()), {}).get('balance', 'N/A')
         
         return Response({
             'total_users': total_users,
@@ -755,19 +805,23 @@ class AdminDashboardView(APIView):
             'today_revenue': str(today_metrics['revenue'] or 0),
             'today_profit': str(today_metrics['profit'] or 0),
             'pending_tickets': pending_tickets,
-            'provider_balance': provider_balance.get('balance', 'N/A')
+            'provider_balance': first_balance,
+            'provider_balances': provider_balances,
         })
 
 
 class AdminUserListView(APIView):
     """Admin user management."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
     
     def get(self, request):
         users = User.objects.all()
         search = request.query_params.get('search')
         if search:
-            users = users.filter(email__icontains=search)
+            from django.db.models import Q
+            users = users.filter(
+                Q(email__icontains=search) | Q(username__icontains=search)
+            )
         
         limit = int(request.query_params.get('limit', 20))
         offset = int(request.query_params.get('offset', 0))
@@ -780,7 +834,7 @@ class AdminUserListView(APIView):
 
 class AdminOrderListView(APIView):
     """Admin order management."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
     
     def get(self, request):
         orders = Order.objects.all()
@@ -808,7 +862,7 @@ class AdminOrderListView(APIView):
 
 class AdminMarkupRuleView(APIView):
     """Admin markup rule management."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
     
     def get(self, request):
         rules = MarkupRule.objects.all()
@@ -818,7 +872,11 @@ class AdminMarkupRuleView(APIView):
         serializer = MarkupRuleSerializer(data=request.data)
         if serializer.is_valid():
             serializer.save()
-            return Response(serializer.data, status=status.HTTP_201_CREATED)
+            # Recalculate prices for existing services
+            updated_count = PricingService.recalculate_all_service_prices()
+            response_data = serializer.data
+            response_data['_services_updated'] = updated_count
+            return Response(response_data, status=status.HTTP_201_CREATED)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     def patch(self, request, rule_id):
@@ -830,13 +888,19 @@ class AdminMarkupRuleView(APIView):
         serializer = MarkupRuleSerializer(rule, data=request.data, partial=True)
         if serializer.is_valid():
             serializer.save()
-            return Response(serializer.data)
+            # Recalculate prices for existing services
+            updated_count = PricingService.recalculate_all_service_prices()
+            response_data = serializer.data
+            response_data['_services_updated'] = updated_count
+            return Response(response_data)
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
     
     def delete(self, request, rule_id):
         try:
             rule = MarkupRule.objects.get(id=rule_id)
             rule.delete()
+            # Recalculate prices for existing services
+            PricingService.recalculate_all_service_prices()
             return Response(status=status.HTTP_204_NO_CONTENT)
         except MarkupRule.DoesNotExist:
             return Response({'error': 'Rule not found'}, status=status.HTTP_404_NOT_FOUND)
@@ -844,7 +908,7 @@ class AdminMarkupRuleView(APIView):
 
 class AdminAPILogView(APIView):
     """Admin API logs viewer."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
     
     def get(self, request):
         logs = APILog.objects.all()
@@ -862,17 +926,43 @@ class AdminAPILogView(APIView):
         })
 
 
+
+class AdminServiceCategoryNamesView(APIView):
+    """Return distinct category_name values for use in markup rule dropdown."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        names = (
+            Service.objects.exclude(category_name='')
+            .values_list('category_name', flat=True)
+            .distinct()
+            .order_by('category_name')
+        )
+        return Response({'categories': sorted(set(names))})
+
+
 class AdminSyncServicesView(APIView):
-    """Force sync services from provider."""
-    permission_classes = [IsAdminUser]
+    """Force sync services from a specific provider."""
+    permission_classes = [permissions.IsAdminUser]
     
     def post(self, request):
+        provider_slug = request.data.get('provider_slug')
+        if not provider_slug:
+            return Response({'error': 'provider_slug is required'}, status=status.HTTP_400_BAD_REQUEST)
+        
         try:
-            services = smm_provider.get_services(force_refresh=True)
-            count = pricing_service.sync_service_prices(services)
+            provider = Provider.objects.get(slug=provider_slug)
+        except Provider.DoesNotExist:
+            return Response({'error': 'Provider not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        try:
+            client = get_provider_client(provider)
+            services = client.get_services(force_refresh=True)
+            count = pricing_service.sync_service_prices(services, provider=provider)
             return Response({
-                'message': f'Successfully synced {count} services',
-                'count': count
+                'message': f'Successfully synced {count} services from {provider.name}',
+                'count': count,
+                'provider': provider.name,
             })
         except SMMProviderError as e:
             return Response(
@@ -882,12 +972,13 @@ class AdminSyncServicesView(APIView):
 
 
 class AdminSyncOrdersView(APIView):
-    """Force sync active orders from provider."""
-    permission_classes = [IsAdminUser]
+    """Force sync active orders. Optionally scoped to a provider."""
+    permission_classes = [permissions.IsAdminUser]
     
     def post(self, request):
+        provider_slug = request.data.get('provider_slug')  # Optional
         try:
-            result = sync_active_orders()
+            result = sync_active_orders(provider_slug=provider_slug)
             return Response(result)
         except Exception as e:
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
@@ -895,7 +986,7 @@ class AdminSyncOrdersView(APIView):
 
 class AdminOrderCancelRefundView(APIView):
     """Cancel orders and refund wallet balance."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
     
     def post(self, request):
         order_ids = request.data.get('order_ids', [])
@@ -925,7 +1016,7 @@ class AdminOrderCancelRefundView(APIView):
 
 class AdminOrderRetryView(APIView):
     """Retry failed orders with the SMM provider."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
     
     def post(self, request):
         order_ids = request.data.get('order_ids', [])
@@ -936,14 +1027,20 @@ class AdminOrderRetryView(APIView):
         
         for oid in order_ids:
             try:
-                order = Order.objects.get(id=oid)
+                order = Order.objects.select_related('service', 'provider').get(id=oid)
                 if order.provider_order_id or order.status not in ('pending', 'failed'):
                     results['errors'].append(f'Order #{str(order.id)[:8]}: already has provider ID or not in retryable state')
                     results['failed'] += 1
                     continue
                 
-                result = smm_provider.create_order(
-                    service_id=order.service.provider_id,
+                if not order.provider:
+                    results['errors'].append(f'Order #{str(order.id)[:8]}: no provider configured')
+                    results['failed'] += 1
+                    continue
+                
+                client = get_provider_client(order.provider)
+                result = client.create_order(
+                    service_id=order.service.external_id,
                     link=order.link,
                     quantity=order.quantity,
                     user=order.user,
@@ -969,7 +1066,7 @@ class AdminOrderRetryView(APIView):
 
 class AdminOrderCheckStatusView(APIView):
     """Check order status from provider."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
     
     def post(self, request):
         order_ids = request.data.get('order_ids', [])
@@ -990,12 +1087,17 @@ class AdminOrderCheckStatusView(APIView):
         
         for oid in order_ids:
             try:
-                order = Order.objects.get(id=oid)
+                order = Order.objects.select_related('provider').get(id=oid)
                 if not order.provider_order_id:
                     results['skipped'] += 1
                     continue
                 
-                result = smm_provider.get_order_status(
+                if not order.provider:
+                    results['skipped'] += 1
+                    continue
+                
+                client = get_provider_client(order.provider)
+                result = client.get_order_status(
                     order.provider_order_id, user=order.user, order=order
                 )
                 if 'status' in result:
@@ -1023,7 +1125,7 @@ class AdminOrderCheckStatusView(APIView):
 
 class AdminUserToggleActiveView(APIView):
     """Toggle user active/inactive status."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
     
     def post(self, request, user_id):
         try:
@@ -1042,7 +1144,7 @@ class AdminUserToggleActiveView(APIView):
 
 class AdminUserAdjustBalanceView(APIView):
     """Manually adjust a user's wallet balance."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
 
     def post(self, request, user_id):
         try:
@@ -1080,7 +1182,7 @@ class AdminUserAdjustBalanceView(APIView):
 
 class AdminUserTransactionsView(APIView):
     """View a specific user's transactions."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
     
     def get(self, request, user_id):
         try:
@@ -1099,7 +1201,7 @@ class AdminUserTransactionsView(APIView):
 
 class AdminPendingDepositsView(APIView):
     """Admin endpoint to fetch pending manual deposits with proofs."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
         from ..serializers import TransactionSerializer
@@ -1124,7 +1226,7 @@ class AdminPendingDepositsView(APIView):
 
 class AdminPendingDepositsCountView(APIView):
     """Admin endpoint to fetch just the count of pending manual deposits."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
         count = Transaction.objects.filter(
@@ -1140,7 +1242,7 @@ class AdminPendingDepositsCountView(APIView):
 
 class AdminVerifyTransactionView(APIView):
     """Admin verifies a pending transaction and credits the user."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
     
     def post(self, request, transaction_id):
         import os
@@ -1246,7 +1348,7 @@ class AdminVerifyTransactionView(APIView):
 
 class AdminFailTransactionView(APIView):
     """Admin manually marks a pending transaction as failed."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
     
     def post(self, request, transaction_id):
         import os
@@ -1274,7 +1376,7 @@ class AdminFailTransactionView(APIView):
 
 class AdminAllTransactionsView(APIView):
     """Admin view to list all transactions across all users, with filtering."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
         qs = Transaction.objects.select_related('wallet__user').order_by('-created_at')
@@ -1326,7 +1428,7 @@ class AdminAllTransactionsView(APIView):
 
 class AdminDeleteLogView(APIView):
     """Delete an individual API log entry."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
 
     def delete(self, request, log_id):
         try:
@@ -1339,7 +1441,7 @@ class AdminDeleteLogView(APIView):
 
 class AdminOrderMarkCompletedView(APIView):
     """Manually mark an order as completed."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
 
     def post(self, request, order_id):
         try:
@@ -1357,7 +1459,7 @@ class AdminOrderMarkCompletedView(APIView):
 
 class AdminOrderRefillView(APIView):
     """Admin endpoint to request a refill for a user's order."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
     
     def post(self, request, order_id):
         try:
@@ -1372,7 +1474,10 @@ class AdminOrderRefillView(APIView):
             return Response({'error': 'Order must be completed to request a refill.'}, status=status.HTTP_400_BAD_REQUEST)
             
         try:
-            result = smm_provider.create_refill(
+            if not order.provider:
+                return Response({'error': 'No provider configured for this order.'}, status=status.HTTP_400_BAD_REQUEST)
+            client = get_provider_client(order.provider)
+            result = client.create_refill(
                 order_id=order.provider_order_id,
                 user=request.user,
                 order=order
@@ -1391,7 +1496,7 @@ class AdminOrderRefillView(APIView):
 
 class AdminDeleteOrderView(APIView):
     """Permanently delete an order."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
 
     def delete(self, request, order_id):
         try:
@@ -1404,7 +1509,7 @@ class AdminDeleteOrderView(APIView):
 
 class AdminDeleteUserView(APIView):
     """Permanently delete a user and all related data."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
 
     def delete(self, request, user_id):
         try:
@@ -1428,11 +1533,11 @@ class AdminDeleteUserView(APIView):
 
 class AdminToggleServiceActiveView(APIView):
     """Toggle a service's is_active status."""
-    permission_classes = [IsAdminUser]
+    permission_classes = [permissions.IsAdminUser]
 
     def post(self, request, service_id):
         try:
-            service = Service.objects.get(provider_id=service_id)
+            service = Service.objects.get(id=service_id)
             service.is_active = not service.is_active
             service.save(update_fields=['is_active'])
             return Response({
@@ -1441,6 +1546,24 @@ class AdminToggleServiceActiveView(APIView):
             })
         except Service.DoesNotExist:
             return Response({'error': 'Service not found'}, status=status.HTTP_404_NOT_FOUND)
+
+
+class AdminBulkToggleServiceActiveView(APIView):
+    """Bulk toggle multiple services' is_active status."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request):
+        service_ids = request.data.get('service_ids', [])
+        is_active = request.data.get('is_active', False)
+        
+        if not isinstance(service_ids, list):
+            return Response({'error': 'service_ids must be a list'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        updated_count = Service.objects.filter(id__in=service_ids).update(is_active=is_active)
+        return Response({
+            'message': f'{"Activated" if is_active else "Deactivated"} {updated_count} services',
+            'updated_count': updated_count
+        })
 
 
 @method_decorator(csrf_exempt, name='dispatch')
@@ -1516,14 +1639,143 @@ class SiteSettingsView(APIView):
 
 
 class AdminToggleShowInactiveView(APIView):
-    """Toggle the show_inactive_services site setting."""
-    permission_classes = [IsAdminUser]
+    """Toggle the show_inactive_services per provider."""
+    permission_classes = [permissions.IsAdminUser]
 
+    def post(self, request, provider_slug=None):
+        if provider_slug:
+            # Per-provider toggle
+            try:
+                provider = Provider.objects.get(slug=provider_slug)
+            except Provider.DoesNotExist:
+                return Response({'error': 'Provider not found'}, status=status.HTTP_404_NOT_FOUND)
+            provider.show_inactive_services = not provider.show_inactive_services
+            provider.save(update_fields=['show_inactive_services'])
+            return Response({
+                'provider': provider.slug,
+                'show_inactive_services': provider.show_inactive_services,
+                'message': f'Inactive services from {provider.name} are now {"visible" if provider.show_inactive_services else "hidden"} to users',
+            })
+        else:
+            # Legacy: toggle global SiteSettings
+            settings = SiteSettings.load()
+            settings.show_inactive_services = not settings.show_inactive_services
+            settings.save()
+            return Response({
+                'show_inactive_services': settings.show_inactive_services,
+                'message': f'Inactive services are now {"visible" if settings.show_inactive_services else "hidden"} to users',
+            })
+
+
+class AdminProviderListView(APIView):
+    """List all providers with their details."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        providers = Provider.objects.all()
+        data = []
+        for p in providers:
+            data.append({
+                'id': p.pk,
+                'name': p.name,
+                'slug': p.slug,
+                'api_url': p.api_url,
+                'currency': p.currency,
+                'exchange_rate': str(p.exchange_rate),
+                'is_active': p.is_active,
+                'show_inactive_services': p.show_inactive_services,
+                'sort_order': p.sort_order,
+                'service_count': p.services.count(),
+                'active_service_count': p.services.filter(is_active=True).count(),
+            })
+        return Response({'providers': data})
+        
     def post(self, request):
-        settings = SiteSettings.load()
-        settings.show_inactive_services = not settings.show_inactive_services
-        settings.save()
+        name = request.data.get('name')
+        api_url = request.data.get('api_url')
+        api_key = request.data.get('api_key')
+        currency = request.data.get('currency', 'USD')
+        exchange_rate = request.data.get('exchange_rate', 1.0)
+        
+        if not all([name, api_url, api_key]):
+            return Response({'error': 'Name, API URL, and API Key are required'}, status=status.HTTP_400_BAD_REQUEST)
+            
+        from django.utils.text import slugify
+        base_slug = slugify(name)
+        slug = base_slug
+        counter = 1
+        while Provider.objects.filter(slug=slug).exists():
+            slug = f"{base_slug}-{counter}"
+            counter += 1
+            
+        provider = Provider.objects.create(
+            name=name,
+            slug=slug,
+            api_url=api_url,
+            api_key=api_key,
+            currency=currency,
+            exchange_rate=exchange_rate,
+            is_active=True
+        )
+        
         return Response({
-            'show_inactive_services': settings.show_inactive_services,
-            'message': f'Inactive services are now {"visible" if settings.show_inactive_services else "hidden"} to users',
+            'id': provider.pk,
+            'name': provider.name,
+            'slug': provider.slug,
+            'api_url': provider.api_url,
+            'currency': provider.currency,
+            'exchange_rate': str(provider.exchange_rate),
+            'is_active': provider.is_active,
+            'show_inactive_services': provider.show_inactive_services,
+            'sort_order': provider.sort_order,
+            'service_count': 0,
+            'active_service_count': 0,
+        }, status=status.HTTP_201_CREATED)
+
+
+class AdminUpdateProviderView(APIView):
+    """Update provider settings (exchange rate, active status, etc)."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def patch(self, request, provider_slug):
+        try:
+            provider = Provider.objects.get(slug=provider_slug)
+        except Provider.DoesNotExist:
+            return Response({'error': 'Provider not found'}, status=status.HTTP_404_NOT_FOUND)
+        
+        updated_fields = []
+        
+        if 'exchange_rate' in request.data:
+            provider.exchange_rate = Decimal(str(request.data['exchange_rate']))
+            updated_fields.append('exchange_rate')
+        
+        if 'is_active' in request.data:
+            provider.is_active = bool(request.data['is_active'])
+            updated_fields.append('is_active')
+        
+        if 'api_url' in request.data:
+            provider.api_url = request.data['api_url']
+            updated_fields.append('api_url')
+        
+        if 'api_key' in request.data:
+            provider.api_key = request.data['api_key']
+            updated_fields.append('api_key')
+        
+        if 'name' in request.data:
+            provider.name = request.data['name']
+            updated_fields.append('name')
+        
+        if updated_fields:
+            updated_fields.append('updated_at')
+            provider.save(update_fields=updated_fields)
+        
+        return Response({
+            'message': f'Provider {provider.name} updated',
+            'provider': {
+                'name': provider.name,
+                'slug': provider.slug,
+                'currency': provider.currency,
+                'exchange_rate': str(provider.exchange_rate),
+                'is_active': provider.is_active,
+            }
         })

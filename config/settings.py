@@ -130,6 +130,7 @@ REST_FRAMEWORK = {
         'anon': '30/minute',
         'user': '120/minute',
         'auth': '5/minute',
+        'orders': '10/minute',
     },
 }
 
