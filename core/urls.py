@@ -30,6 +30,7 @@ from .views import (
     AdminTicketListView, AdminTicketDetailView, AdminPendingTicketsCountView,
     AdminProviderListView, AdminUpdateProviderView, AdminServiceCategoryNamesView
 )
+from .views.export_views import AdminExportUsersCSVView
 from .views.payment_views import (
     InitiateTopupView, VerifyTopupView, SquadWebhookView,
     InitiateManualTopupView, InitiateCryptoTopupView
@@ -113,6 +114,7 @@ urlpatterns = [
     path('admin/services/<int:service_id>/toggle-active/', AdminToggleServiceActiveView.as_view(), name='admin-service-toggle-active'),
     path('admin/services/bulk-toggle-active/', AdminBulkToggleServiceActiveView.as_view(), name='admin-service-bulk-toggle-active'),
     path('admin/settings/toggle-show-inactive/', AdminToggleShowInactiveView.as_view(), name='admin-toggle-show-inactive'),
+    path('admin/users/export-csv/', AdminExportUsersCSVView.as_view(), name='admin-users-export-csv'),
     
     # Provider management endpoints
     path('admin/providers/', AdminProviderListView.as_view(), name='admin-providers'),
