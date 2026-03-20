@@ -1,7 +1,10 @@
 from django.utils import timezone
 from core.models import Order, Provider
 from core.services.smm_provider import get_provider_client, SMMProviderError
+import logging
 import time
+
+logger = logging.getLogger(__name__)
 
 def sync_active_orders(provider_slug=None):
     """
@@ -80,7 +83,8 @@ def sync_active_orders(provider_slug=None):
                             order.remains = remains
                             order.save(update_fields=['remains'])
         
-        except Exception:
+        except Exception as e:
+            logger.error(f'Failed to sync order {order.id}: {e}', exc_info=True)
             errors += 1
             
     return {'updated': updated, 'errors': errors}

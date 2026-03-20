@@ -958,6 +958,15 @@ class AdminSyncServicesView(APIView):
         try:
             client = get_provider_client(provider)
             services = client.get_services(force_refresh=True)
+
+            if not services:
+                return Response({
+                    'message': f'Provider {provider.name} returned an empty service list. Sync skipped to protect existing services.',
+                    'count': 0,
+                    'provider': provider.name,
+                    'skipped': True,
+                })
+
             count = pricing_service.sync_service_prices(services, provider=provider)
             return Response({
                 'message': f'Successfully synced {count} services from {provider.name}',
@@ -1768,7 +1777,14 @@ class AdminUpdateProviderView(APIView):
         if updated_fields:
             updated_fields.append('updated_at')
             provider.save(update_fields=updated_fields)
-        
+
+        # If exchange_rate changed, immediately recalculate all service prices for
+        # this provider so that provider_rate_ngn and user_rate are up-to-date
+        # without having to wait for the next scheduled sync.
+        services_updated = 0
+        if 'exchange_rate' in updated_fields:
+            services_updated = PricingService.recalculate_all_service_prices(provider=provider)
+
         return Response({
             'message': f'Provider {provider.name} updated',
             'provider': {
@@ -1777,5 +1793,7 @@ class AdminUpdateProviderView(APIView):
                 'currency': provider.currency,
                 'exchange_rate': str(provider.exchange_rate),
                 'is_active': provider.is_active,
-            }
+            },
+            'services_repriced': services_updated,
         })
+
