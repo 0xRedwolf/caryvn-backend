@@ -32,6 +32,12 @@ def sync_services_task():
         try:
             client = get_provider_client(provider)
             services = client.get_services(force_refresh=True)
+
+            if not services:
+                results[provider.slug] = {'count': 0, 'status': 'skipped', 'reason': 'provider returned empty service list'}
+                logger.warning(f'Service sync skipped for {provider.name}: provider returned an empty list. Skipping to avoid wiping active services.')
+                continue
+
             count = pricing_service.sync_service_prices(services, provider=provider)
             results[provider.slug] = {'count': count, 'status': 'success'}
             logger.info(f'Service sync for {provider.name}: {count} services synced')
