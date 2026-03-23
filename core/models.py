@@ -604,3 +604,23 @@ from django.dispatch import receiver
 def create_user_wallet(sender, instance, created, **kwargs):
     if created:
         Wallet.objects.create(user=instance)
+
+class PopupCard(models.Model):
+    """Announcement or Ad cards displayed on the user dashboard."""
+    
+    title = models.CharField(max_length=200, blank=True, null=True)
+    description = models.TextField(blank=True, help_text="Optional text content for the card")
+    image = models.ImageField(upload_to='popups/', blank=True, null=True, help_text="Square image works best (1:1 ratio)")
+    action_url = models.URLField(blank=True, max_length=500, help_text="Optional link when card is clicked")
+    
+    is_active = models.BooleanField(default=True)
+    order = models.IntegerField(default=0, help_text="Lower numbers appear first")
+    created_at = models.DateTimeField(auto_now_add=True)
+    
+    class Meta:
+        ordering = ['order', '-created_at']
+        verbose_name = 'Popup Card'
+        verbose_name_plural = 'Popup Cards'
+    
+    def __str__(self):
+        return f"{self.title} ({'Active' if self.is_active else 'Inactive'})"

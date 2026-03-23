@@ -28,7 +28,8 @@ from .views import (
     AdminPendingDepositsView, AdminPendingDepositsCountView,
     AdminAllTransactionsView,
     AdminTicketListView, AdminTicketDetailView, AdminPendingTicketsCountView,
-    AdminProviderListView, AdminUpdateProviderView, AdminServiceCategoryNamesView
+    AdminProviderListView, AdminUpdateProviderView, AdminServiceCategoryNamesView,
+    ActivePopupCardsView, AdminPopupCardsView, AdminPopupCardDetailView
 )
 from .views.export_views import AdminExportUsersCSVView
 from .views.payment_views import (
@@ -68,6 +69,9 @@ urlpatterns = [
     
     # Settings endpoints
     path('settings/', SiteSettingsView.as_view(), name='site-settings'),
+    
+    # Popup endpoints
+    path('popups/active/', ActivePopupCardsView.as_view(), name='active-popups'),
     
     # Order endpoints
     path('orders/', OrderListView.as_view(), name='orders'),
@@ -125,6 +129,10 @@ urlpatterns = [
     path('admin/tickets/', AdminTicketListView.as_view(), name='admin-tickets'),
     path('admin/tickets/pending/count/', AdminPendingTicketsCountView.as_view(), name='admin-pending-tickets-count'),
     path('admin/tickets/<uuid:ticket_id>/', AdminTicketDetailView.as_view(), name='admin-ticket-detail'),
+    
+    # Admin Popup endpoints
+    path('admin/popups/', AdminPopupCardsView.as_view(), name='admin-popups'),
+    path('admin/popups/<int:popup_id>/', AdminPopupCardDetailView.as_view(), name='admin-popup-detail'),
     
     # Activity tracking
     path('activity/', LogActivityView.as_view(), name='log-activity'),
