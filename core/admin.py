@@ -5,7 +5,8 @@ from django.contrib import admin
 from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from .models import (
     User, Wallet, Transaction, ServiceCategory, Service,
-    MarkupRule, Order, Ticket, TicketReply, APILog, Provider
+    MarkupRule, Order, Ticket, TicketReply, APILog, Provider,
+    PopupCard
 )
 
 
@@ -215,3 +216,11 @@ class APILogAdmin(admin.ModelAdmin):
     list_filter = ('action', 'response_code', 'created_at')
     search_fields = ('user__email',)
     readonly_fields = ('created_at',)
+
+
+@admin.register(PopupCard)
+class PopupCardAdmin(admin.ModelAdmin):
+    list_display = ('title', 'is_active', 'order', 'action_url', 'created_at')
+    list_filter = ('is_active',)
+    search_fields = ('title', 'description')
+    list_editable = ('is_active', 'order')

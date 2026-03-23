@@ -6,7 +6,7 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from .models import (
     Wallet, Transaction, ServiceCategory, Service,
-    Order, Ticket, TicketReply, MarkupRule, APILog
+    Order, Ticket, TicketReply, MarkupRule, APILog, PopupCard
 )
 
 User = get_user_model()
@@ -300,3 +300,9 @@ class AdminUserSerializer(serializers.ModelSerializer):
         from django.db.models import Sum
         result = obj.orders.filter(status__in=['completed', 'partial']).aggregate(Sum('charge'))
         return result['charge__sum'] or 0
+
+class PopupCardSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = PopupCard
+        fields = ('id', 'title', 'description', 'image', 'action_url', 'order', 'is_active')
+
