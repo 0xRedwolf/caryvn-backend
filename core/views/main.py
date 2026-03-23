@@ -849,7 +849,12 @@ class AdminOrderListView(APIView):
         if user_filter:
             orders = orders.filter(user__email__icontains=user_filter)
         if search:
-            orders = orders.filter(link__icontains=search)
+            from django.db.models import Q
+            orders = orders.filter(
+                Q(link__icontains=search) |
+                Q(user__email__icontains=search) |
+                Q(id__icontains=search)
+            )
         
         limit = int(request.query_params.get('limit', 20))
         offset = int(request.query_params.get('offset', 0))
