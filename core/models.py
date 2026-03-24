@@ -625,3 +625,30 @@ class PopupCard(models.Model):
     
     def __str__(self):
         return f"{self.title} ({'Active' if self.is_active else 'Inactive'})"
+
+# Signal to auto-delete image files when a PopupCard is deleted or changed
+from django.db.models.signals import post_delete, pre_save
+import os
+
+@receiver(post_delete, sender=PopupCard)
+def auto_delete_popup_image_on_delete(sender, instance, **kwargs):
+    """Deletes file from filesystem when corresponding PopupCard object is deleted."""
+    if instance.image:
+        if os.path.isfile(instance.image.path):
+            os.remove(instance.image.path)
+
+@receiver(pre_save, sender=PopupCard)
+def auto_delete_popup_image_on_change(sender, instance, **kwargs):
+    """Deletes old file from filesystem when corresponding PopupCard object is updated with a new file."""
+    if not instance.pk:
+        return False
+
+    try:
+        old_file = PopupCard.objects.get(pk=instance.pk).image
+    except PopupCard.DoesNotExist:
+        return False
+
+    new_file = instance.image
+    if not old_file == new_file:
+        if old_file and os.path.isfile(old_file.path):
+            os.remove(old_file.path)
