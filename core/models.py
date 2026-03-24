@@ -612,6 +612,7 @@ class PopupCard(models.Model):
     description = models.TextField(blank=True, help_text="Optional text content for the card")
     image = models.ImageField(upload_to='popups/', blank=True, null=True, help_text="Square image works best (1:1 ratio)")
     action_url = models.URLField(blank=True, max_length=500, help_text="Optional link when card is clicked")
+    action_text = models.CharField(max_length=50, blank=True, default="Learn More", help_text="Text to display on the action button (e.g., 'Learn More', 'Buy Now')")
     
     is_active = models.BooleanField(default=True)
     order = models.IntegerField(default=0, help_text="Lower numbers appear first")
