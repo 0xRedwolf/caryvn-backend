@@ -304,5 +304,5 @@ class AdminUserSerializer(serializers.ModelSerializer):
 class PopupCardSerializer(serializers.ModelSerializer):
     class Meta:
         model = PopupCard
-        fields = ('id', 'title', 'description', 'image', 'action_url', 'order', 'is_active')
+        fields = ('id', 'title', 'description', 'image', 'action_url', 'action_text', 'order', 'is_active')
 
