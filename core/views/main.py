@@ -269,21 +269,23 @@ class OrderCreateView(APIView):
     """Create a new order."""
     throttle_classes = [ScopedRateThrottle]
     throttle_scope = 'orders'
-    
+
     @transaction.atomic
     def post(self, request):
         from django.core.cache import cache
+        from ..tasks import submit_order_to_provider
+
         serializer = OrderCreateSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        
+
         service = serializer.validated_data['service']
         quantity = serializer.validated_data['quantity']
         link = serializer.validated_data['link']
         comments = request.data.get('comments', '').strip() or None
-        
+
         # --- PREVENT DUPLICATE PROCESSING / SPAM ---
-        # 1) Concurrency Lock (Cache Check)
+        # 1) Concurrency Lock — stored in Redis so it works across all gunicorn workers
         lock_key = f"order_lock_{request.user.id}_{service.id}_{link}"
         if not cache.add(lock_key, 'locked', timeout=60):
             return Response(
@@ -301,17 +303,16 @@ class OrderCreateView(APIView):
         ).exists()
 
         if has_active_order:
-            # Drop the lock instantly if they hit the database duplicate rule so they don't get 'clicking too fast' on a different subsequent request
             cache.delete(lock_key)
             return Response(
                 {'error': 'You already have an active order for this exact link. Please wait until it completes to avoid sending duplicates to the provider.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
         # --- END OF DUPLICATE CHECKS ---
-        
+
         # Calculate charge
         charge = service.calculate_price(quantity)
-        
+
         # Check balance (fresh read from DB, not cached)
         wallet = Wallet.objects.get(user=request.user)
         if wallet.balance < charge:
@@ -319,8 +320,8 @@ class OrderCreateView(APIView):
                 {'error': 'Insufficient balance', 'required': str(charge), 'available': str(wallet.balance)},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
-        # Create order (include provider reference)
+
+        # Create order record
         order = Order.objects.create(
             user=request.user,
             service=service,
@@ -328,67 +329,28 @@ class OrderCreateView(APIView):
             link=link,
             quantity=quantity,
             provider_rate=service.provider_rate,
-            provider_rate_ngn=service.provider_rate_ngn, # NEW: Save the converted rate
+            provider_rate_ngn=service.provider_rate_ngn,
             user_rate=service.user_rate,
             charge=charge,
             status=Order.Status.PENDING
         )
-        
+
         # Calculate and store profit
         order.calculate_profit()
         order.save()
-        
+
         # Deduct from wallet (uses select_for_update internally for safety)
         wallet.charge(charge, f'Order #{str(order.id)[:8]} - {service.name}')
-        
-        # Submit to provider (route to correct provider)
-        provider_error = None
-        try:
-            if not service.provider:
-                provider_error = 'No provider configured for this service'
-            else:
-                client = get_provider_client(service.provider)
-                result = client.create_order(
-                    service_id=service.external_id,
-                    link=link,
-                    quantity=quantity,
-                    comments=comments,
-                    user=request.user,
-                    order=order
-                )
-                
-                if 'order' in result:
-                    order.provider_order_id = str(result['order'])
-                    order.status = Order.Status.PROCESSING
-                    order.save()
-                elif 'error' in result:
-                    provider_error = str(result['error'])
-        except SMMProviderError as e:
-            provider_error = str(e)
-        
-        # If provider failed, refund the user automatically
-        if provider_error:
-            wallet.refund(charge, f'Refund - provider failed: Order #{str(order.id)[:8]}')
-            order.status = Order.Status.FAILED
-            order.save()
-            logger.error(f'Order {order.id} failed, auto-refunded ₦{charge}: {provider_error}')
-            return Response({
-                'order': OrderSerializer(order).data,
-                'message': 'Order could not be placed with provider. Your wallet has been refunded.',
-                'refunded': True,
-            }, status=status.HTTP_201_CREATED)
-        
 
-        # Send order confirmation email (fire-and-forget — never blocks the response)
-        try:
-            email_service.send_order_confirmation(request.user, order)
-        except Exception as e:
-            logger.warning(f'Order confirmation email failed (non-critical): {e}')
+        # Dispatch to Celery — returns immediately, worker handles the provider API call.
+        # The task handles: provider submission, status updates, auto-refund on failure, email.
+        submit_order_to_provider.delay(str(order.id), comments)
 
         return Response({
             'order': OrderSerializer(order).data,
-            'message': 'Order placed successfully'
+            'message': 'Order submitted — processing now'
         }, status=status.HTTP_201_CREATED)
+
 
 
 class OrderListView(APIView):

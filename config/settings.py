@@ -168,8 +168,14 @@ REDIS_URL = env('REDIS_URL', default='redis://localhost:6379/0')
 
 CACHES = {
     'default': {
-        'BACKEND': 'django.core.cache.backends.locmem.LocMemCache',
-        'LOCATION': 'unique-snowflake',
+        # Use Redis in production (Railway provides a real REDIS_URL).
+        # Fall back to in-process memory locally so dev works without Redis.
+        'BACKEND': (
+            'django.core.cache.backends.locmem.LocMemCache'
+            if 'localhost' in REDIS_URL or '127.0.0.1' in REDIS_URL
+            else 'django.core.cache.backends.redis.RedisCache'
+        ),
+        'LOCATION': REDIS_URL,
     }
 }
 

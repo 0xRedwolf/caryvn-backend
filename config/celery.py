@@ -17,13 +17,15 @@ app.autodiscover_tasks()
 
 # Beat schedule — periodic tasks
 app.conf.beat_schedule = {
-    'sync-active-orders-every-30-min': {
+    # Sync active order statuses from provider — every 5 minutes for fast updates
+    'sync-active-orders-every-5-min': {
         'task': 'core.tasks.sync_orders_task',
-        'schedule': 30 * 60,  # Every 30 minutes
+        'schedule': 5 * 60,  # Every 5 minutes
     },
-    'sync-services-every-30-minutes': {
+    # Sync the service catalogue from providers — every 6 hours is plenty
+    'sync-services-every-6-hours': {
         'task': 'core.tasks.sync_services_task',
-        'schedule': 30 * 60,  # Every 30 minutes
+        'schedule': 6 * 60 * 60,  # Every 6 hours
     },
 }
 app.conf.timezone = 'UTC'
