@@ -342,13 +342,18 @@ class OrderCreateView(APIView):
         # Deduct from wallet (uses select_for_update internally for safety)
         wallet.charge(charge, f'Order #{str(order.id)[:8]} - {service.name}')
 
-        # Dispatch to Celery — returns immediately, worker handles the provider API call.
-        # The task handles: provider submission, status updates, auto-refund on failure, email.
-        submit_order_to_provider.delay(str(order.id), comments)
+        # Dispatch to Celery AFTER the transaction commits.
+        # If we called .delay() directly inside @transaction.atomic, the worker could
+        # pick up the task before the DB write is visible → Order.DoesNotExist → silent failure.
+        # transaction.on_commit() guarantees the order row exists before the worker runs.
+        order_id_str = str(order.id)
+        transaction.on_commit(
+            lambda: submit_order_to_provider.delay(order_id_str, comments)
+        )
 
         return Response({
             'order': OrderSerializer(order).data,
-            'message': 'Order submitted — processing now'
+            'message': 'Order submitted, processing now'
         }, status=status.HTTP_201_CREATED)
 
 
