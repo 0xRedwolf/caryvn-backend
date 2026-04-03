@@ -185,6 +185,10 @@ CELERY_RESULT_BACKEND = REDIS_URL
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
+# Must match the -Q flag in the Procfile/Railway start command.
+# Without this, .delay() sends to "celery" queue but worker listens on "default" → tasks never process.
+CELERY_TASK_DEFAULT_QUEUE = 'default'
+
 
 # Service Cache TTL (in seconds)
 SERVICE_CACHE_TTL = 15 * 60  # 15 minutes
