@@ -89,6 +89,36 @@ def submit_order_to_provider(self, order_id: str, comments=None):
     logger.info(f'Order {order_id} submitted to provider successfully.')
 
 
+@shared_task(name='core.tasks.retry_stuck_orders_task')
+def retry_stuck_orders_task():
+    """
+    Safety net: find PENDING orders that were never submitted to the provider
+    (no provider_order_id) and are older than 2 minutes, then submit them now.
+
+    This catches orders where the on_commit Celery dispatch silently failed
+    (e.g. Redis blip, worker restart during deploy, etc.).
+    """
+    from django.utils import timezone
+    from datetime import timedelta
+    from core.models import Order
+
+    cutoff = timezone.now() - timedelta(minutes=2)
+    stuck_orders = Order.objects.filter(
+        status=Order.Status.PENDING,
+        provider_order_id__isnull=True,
+        created_at__lte=cutoff,
+    ).exclude(provider_order_id='').values_list('id', flat=True)
+
+    count = 0
+    for order_id in stuck_orders:
+        submit_order_to_provider.delay(str(order_id))
+        count += 1
+
+    if count:
+        logger.info(f'retry_stuck_orders_task: re-queued {count} stuck pending orders.')
+    return {'requeued': count}
+
+
 @shared_task(name='core.tasks.sync_orders_task')
 def sync_orders_task():
     """Sync all active orders with their respective providers every 30 minutes."""
