@@ -576,7 +576,7 @@ class SiteSettings(models.Model):
     crypto_sol = models.CharField(max_length=200, blank=True, help_text='SOL wallet address')
     
     # Financial Settings
-    min_topup_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('1000.00'), help_text='Minimum allowed top-up amount')
+    min_topup_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('500.00'), help_text='Minimum allowed top-up amount')
 
     class Meta:
         verbose_name = 'Site Settings'

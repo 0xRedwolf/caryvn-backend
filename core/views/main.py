@@ -1190,7 +1190,7 @@ class AdminPendingDepositsView(APIView):
         transactions = Transaction.objects.select_related('wallet__user').filter(
             status=Transaction.Status.PENDING,
         ).exclude(
-            payment_gateway='squad'
+            payment_gateway='paystack'
         ).exclude(
             payment_gateway=''
         ).order_by('created_at')
@@ -1213,7 +1213,7 @@ class AdminPendingDepositsCountView(APIView):
         count = Transaction.objects.filter(
             status=Transaction.Status.PENDING,
         ).exclude(
-            payment_gateway='squad'
+            payment_gateway='paystack'
         ).exclude(
             payment_gateway=''
         ).count()
@@ -1235,9 +1235,9 @@ class AdminVerifyTransactionView(APIView):
         if transaction.status != Transaction.Status.PENDING:
             return Response({'error': f'Transaction is already {transaction.status}'}, status=status.HTTP_400_BAD_REQUEST)
             
-        # Non-Squad gateways (manual bank, binance_pay, on_chain_*): approve directly
-        is_squad = (transaction.payment_gateway == 'squad' and bool(transaction.payment_reference))
-        if not is_squad:
+        # Non-Paystack gateways (manual bank, binance_pay, on_chain_*): approve directly
+        is_paystack = (transaction.payment_gateway == 'paystack' and bool(transaction.payment_reference))
+        if not is_paystack:
             is_crypto = transaction.payment_gateway in (
                 'binance_pay', 'on_chain_usdt_trc20', 'on_chain_usdt_bep20', 'on_chain_sol'
             )
@@ -1307,8 +1307,8 @@ class AdminVerifyTransactionView(APIView):
             return Response(response_data)
 
         try:
-            from ..services.squad import squad_service, SquadPaymentError
-            result = squad_service.verify_payment(transaction.payment_reference)
+            from ..services.paystack import paystack_service, PaystackPaymentError
+            result = paystack_service.verify_payment(transaction.payment_reference)
             if result['success']:
                 wallet = transaction.wallet
                 new_balance = wallet.confirm_deposit(transaction)
@@ -1320,9 +1320,9 @@ class AdminVerifyTransactionView(APIView):
                     )
                 except Exception as e:
                     logger.warning(f'Topup success email failed (non-critical): {e}')
-                return Response({'message': 'Verified with Squad and credited successfully', 'new_balance': str(new_balance)})
+                return Response({'message': 'Verified with Paystack and credited successfully', 'new_balance': str(new_balance)})
             else:
-                return Response({'error': 'Squad verification failed (not successful)'}, status=status.HTTP_400_BAD_REQUEST)
+                return Response({'error': 'Paystack verification failed (not successful)'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({'error': f'Verification failed: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 

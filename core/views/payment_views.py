@@ -1,6 +1,6 @@
 """
 Payment views for Caryvn.
-Handles Squad payment initiation, verification, and webhook processing.
+Handles Paystack payment initiation, verification, and webhook processing.
 """
 import json
 import logging
@@ -13,14 +13,14 @@ from rest_framework.throttling import UserRateThrottle
 from django.views.decorators.csrf import csrf_exempt
 from django.utils.decorators import method_decorator
 from core.models import Transaction, Wallet
-from core.services.squad import squad_service, SquadPaymentError
+from core.services.paystack import paystack_service, PaystackPaymentError
 logger = logging.getLogger(__name__)
 
 MAX_TOPUP_AMOUNT = Decimal('500000')   # ₦500,000 maximum
 
 
 class InitiateTopupView(APIView):
-    """Initiate a wallet top-up via Squad payment."""
+    """Initiate a wallet top-up via Paystack payment."""
 
     def post(self, request):
         amount = request.data.get('amount')
@@ -55,15 +55,15 @@ class InitiateTopupView(APIView):
             )
 
         # Generate reference and create pending transaction
-        reference = squad_service.generate_reference()
+        reference = paystack_service.generate_reference()
         wallet = request.user.wallet
 
         try:
             transaction = wallet.create_pending_deposit(
                 amount=amount,
                 payment_reference=reference,
-                payment_gateway='squad',
-                description=f'Wallet top-up via Squad (₦{amount:,.2f})',
+                payment_gateway='paystack',
+                description=f'Wallet top-up via Paystack (₦{amount:,.2f})',
             )
         except Exception as e:
             logger.error(f'Failed to create pending transaction: {e}')
@@ -72,9 +72,9 @@ class InitiateTopupView(APIView):
                 status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
 
-        # Call Squad to initiate payment
+        # Call Paystack to initiate payment
         try:
-            result = squad_service.initiate_payment(
+            result = paystack_service.initiate_payment(
                 email=request.user.email,
                 amount_naira=amount,
                 transaction_ref=reference,
@@ -88,10 +88,10 @@ class InitiateTopupView(APIView):
                 'amount': str(amount),
             })
 
-        except SquadPaymentError as e:
-            # Mark transaction as failed since Squad rejected it
+        except PaystackPaymentError as e:
+            # Mark transaction as failed since Paystack rejected it
             wallet.fail_deposit(transaction)
-            logger.error(f'Squad initiate failed: {e}')
+            logger.error(f'Paystack initiate failed: {e}')
             return Response(
                 {'error': str(e)},
                 status=status.HTTP_502_BAD_GATEWAY
@@ -357,7 +357,7 @@ class InitiateCryptoTopupView(APIView):
 
 
 class VerifyTopupView(APIView):
-    """Verify a wallet top-up payment via Squad."""
+    """Verify a wallet top-up payment via Paystack."""
 
     def get(self, request):
         reference = request.query_params.get('reference', '')
@@ -396,9 +396,9 @@ class VerifyTopupView(APIView):
                 'message': 'Payment failed',
             })
 
-        # Verify with Squad
+        # Verify with Paystack
         try:
-            result = squad_service.verify_payment(reference)
+            result = paystack_service.verify_payment(reference)
 
             if result['success']:
                 # Verify amount matches (convert to Naira for comparison)
@@ -442,8 +442,8 @@ class VerifyTopupView(APIView):
                     'message': 'Payment was not successful',
                 })
 
-        except SquadPaymentError as e:
-            logger.error(f'Squad verify failed: {e}')
+        except PaystackPaymentError as e:
+            logger.error(f'Paystack verify failed: {e}')
             return Response(
                 {'error': f'Verification failed: {str(e)}'},
                 status=status.HTTP_502_BAD_GATEWAY
@@ -451,30 +451,43 @@ class VerifyTopupView(APIView):
 
 
 @method_decorator(csrf_exempt, name='dispatch')
-class SquadWebhookView(APIView):
-    """Handle Squad payment webhooks."""
+class PaystackWebhookView(APIView):
+    """Handle Paystack payment webhooks."""
     permission_classes = [permissions.AllowAny]
     authentication_classes = []  # No JWT auth for webhooks
 
     def post(self, request):
         # Get the raw body and signature
         raw_body = request.body
-        signature = request.META.get('HTTP_X_SQUAD_ENCRYPTED_BODY', '')
+        signature = request.META.get('HTTP_X_PAYSTACK_SIGNATURE', '')
 
-        # Validate signature
+        # Validate signature — ALWAYS required
         from django.conf import settings as django_settings
-        secret_key = django_settings.SQUAD_SECRET_KEY
+        secret_key = django_settings.PAYSTACK_SECRET_KEY
 
-        if secret_key and signature:
-            is_valid = squad_service.validate_webhook_signature(
-                raw_body, signature, secret_key
+        if not secret_key:
+            logger.error('Paystack webhook received but PAYSTACK_SECRET_KEY is not configured')
+            return Response(
+                {'error': 'Webhook not configured'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
             )
-            if not is_valid:
-                logger.warning('Invalid Squad webhook signature')
-                return Response(
-                    {'error': 'Invalid signature'},
-                    status=status.HTTP_401_UNAUTHORIZED
-                )
+
+        if not signature:
+            logger.warning('Paystack webhook received with no signature header')
+            return Response(
+                {'error': 'Missing signature'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
+
+        is_valid = paystack_service.validate_webhook_signature(
+            raw_body, signature, secret_key
+        )
+        if not is_valid:
+            logger.warning('Invalid Paystack webhook signature')
+            return Response(
+                {'error': 'Invalid signature'},
+                status=status.HTTP_401_UNAUTHORIZED
+            )
 
         # Parse the webhook payload
         try:
@@ -485,24 +498,17 @@ class SquadWebhookView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        event = payload.get('Event', '')
-        data = payload.get('Body', payload.get('TransactionRef', payload))
+        # Paystack event format: { "event": "charge.success", "data": { "reference": "...", ... } }
+        event = payload.get('event', '')
+        data = payload.get('data', {})
 
         # Handle successful payment
-        if event == 'charge_successful' or payload.get('transaction_status') == 'Success':
-            transaction_ref = (
-                data.get('transaction_ref') or
-                data.get('TransactionRef') or
-                payload.get('transaction_ref', '')
-            )
-            amount_kobo = (
-                data.get('amount') or
-                data.get('transaction_amount') or
-                payload.get('amount', 0)
-            )
+        if event == 'charge.success':
+            transaction_ref = data.get('reference', '')
+            amount_kobo = data.get('amount', 0)
 
             if not transaction_ref:
-                logger.warning('Webhook missing transaction_ref')
+                logger.warning('Paystack webhook missing reference')
                 return Response({'status': 'ok'})
 
             # Find and credit the transaction
@@ -525,11 +531,11 @@ class SquadWebhookView(APIView):
                         logger.error(f'Failed to send top-up email from webhook: {e}')
 
                     logger.info(
-                        f'Webhook credited wallet for {transaction_ref}: '
+                        f'Paystack webhook credited wallet for {transaction_ref}: '
                         f'amount={transaction.amount}, new_balance={new_balance}'
                     )
 
             except Transaction.DoesNotExist:
-                logger.warning(f'Webhook: transaction not found for ref={transaction_ref}')
+                logger.warning(f'Paystack webhook: transaction not found for ref={transaction_ref}')
 
         return Response({'status': 'ok'})
