@@ -33,7 +33,7 @@ from .views import (
 )
 from .views.export_views import AdminExportUsersCSVView
 from .views.payment_views import (
-    InitiateTopupView, VerifyTopupView, PaystackWebhookView,
+    InitiateTopupView, VerifyTopupView, SquadWebhookView,
     InitiateManualTopupView, InitiateCryptoTopupView
 )
 from .views.analytics_views import AdminAnalyticsView
@@ -61,7 +61,7 @@ urlpatterns = [
     path('wallet/topup/verify/', VerifyTopupView.as_view(), name='topup-verify'),
     
     # Payment webhooks (no auth — validated by signature)
-    path('payments/paystack/webhook/', PaystackWebhookView.as_view(), name='paystack-webhook'),
+    path('payments/squad/webhook/', SquadWebhookView.as_view(), name='squad-webhook'),
     
     # Service endpoints
     path('services/', ServiceListView.as_view(), name='services'),

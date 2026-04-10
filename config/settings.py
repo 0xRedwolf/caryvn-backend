@@ -222,9 +222,10 @@ LOGGING = {
     },
 }
 
-# Paystack Payment Gateway
-PAYSTACK_SECRET_KEY = env('PAYSTACK_SECRET_KEY', default='')
-PAYSTACK_PUBLIC_KEY = env('PAYSTACK_PUBLIC_KEY', default='')
+# Squad Payment Gateway
+SQUAD_SECRET_KEY = env('SQUAD_SECRET_KEY', default='')
+SQUAD_PUBLIC_KEY = env('SQUAD_PUBLIC_KEY', default='')
+SQUAD_BASE_URL = env('SQUAD_BASE_URL', default='https://sandbox-api-d.squadco.com')
 
 # Email Configuration (SMTP settings kept for reference but unused — see email_service.py)
 EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')

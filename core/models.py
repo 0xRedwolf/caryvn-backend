@@ -575,6 +575,20 @@ class SiteSettings(models.Model):
     crypto_usdt_bep20 = models.CharField(max_length=200, blank=True, help_text='USDT-BEP20 wallet address')
     crypto_sol = models.CharField(max_length=200, blank=True, help_text='SOL wallet address')
     
+    # Payment Method Toggles
+    squad_enabled = models.BooleanField(
+        default=True,
+        help_text='Allow users to deposit using the Squad (card/online) payment gateway'
+    )
+    manual_bank_enabled = models.BooleanField(
+        default=True,
+        help_text='Allow users to deposit via manual bank transfer'
+    )
+    crypto_enabled = models.BooleanField(
+        default=True,
+        help_text='Allow users to deposit via Crypto (Binance Pay / On-Chain)'
+    )
+
     # Financial Settings
     min_topup_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('500.00'), help_text='Minimum allowed top-up amount')
 
