@@ -28,13 +28,22 @@ class AdminAnalyticsView(APIView):
 
     def get(self, request):
         now = timezone.now()
-        thirty_days_ago = now - timedelta(days=30)
+
+        # Date range — default 30 days, override via ?days=N
+        try:
+            days = int(request.query_params.get('days', 30))
+            if days not in (7, 14, 30, 90, 365):
+                days = 30
+        except (TypeError, ValueError):
+            days = 30
+
+        window_start = now - timedelta(days=days)
         seven_days_ago = now - timedelta(days=7)
 
-        # --- Revenue data (last 30 days, daily breakdown) ---
+        # --- Revenue data (selected window, daily breakdown) ---
         revenue_daily = (
             Order.objects
-            .filter(created_at__gte=thirty_days_ago)
+            .filter(created_at__gte=window_start)
             .exclude(status__in=[Order.Status.CANCELED, Order.Status.REFUNDED, Order.Status.FAILED])
             .annotate(date=TruncDate('created_at'))
             .values('date')
@@ -56,10 +65,10 @@ class AdminAnalyticsView(APIView):
             for item in revenue_daily
         ]
 
-        # --- User growth (last 30 days, daily breakdown) ---
+        # --- User growth (selected window, daily breakdown) ---
         user_growth = (
             User.objects
-            .filter(date_joined__gte=thirty_days_ago)
+            .filter(date_joined__gte=window_start)
             .annotate(date=TruncDate('date_joined'))
             .values('date')
             .annotate(count=Count('id'))
@@ -74,10 +83,10 @@ class AdminAnalyticsView(APIView):
             for item in user_growth
         ]
 
-        # --- Popular services (top 10 by order count) ---
+        # --- Popular services (top 10 by order count in window) ---
         popular_services = (
             Order.objects
-            .filter(created_at__gte=thirty_days_ago)
+            .filter(created_at__gte=window_start)
             .values('service__name', 'service__category_name')
             .annotate(
                 order_count=Count('id'),
@@ -98,16 +107,17 @@ class AdminAnalyticsView(APIView):
             for item in popular_services
         ]
 
-        # --- Order stats ---
-        all_orders = Order.objects.all()
-        total_orders = all_orders.count()
-        
+        # --- Order stats (scoped to window) ---
+        windowed_orders = Order.objects.filter(created_at__gte=window_start)
+        all_orders = Order.objects.all()  # kept for all-time totals
+        total_orders = windowed_orders.count()
+
         order_status_breakdown = (
-            all_orders
+            windowed_orders
             .values('status')
             .annotate(count=Count('id'))
         )
-        
+
         status_data = {
             item['status']: item['count']
             for item in order_status_breakdown
@@ -116,43 +126,61 @@ class AdminAnalyticsView(APIView):
         completed_count = status_data.get('completed', 0) + status_data.get('partial', 0)
         completion_rate = round((completed_count / total_orders * 100), 1) if total_orders > 0 else 0
 
-        avg_order_value = all_orders.exclude(
+        avg_order_value = windowed_orders.exclude(
             status__in=['canceled', 'cancelled', 'refunded', 'failed']
         ).aggregate(avg=Avg('charge'))['avg'] or 0
 
-        # --- Summary cards ---
-        total_revenue = all_orders.exclude(
+        # --- Summary cards (windowed) ---
+        total_revenue = windowed_orders.exclude(
             status__in=['canceled', 'cancelled', 'refunded', 'failed']
         ).aggregate(total=Sum('charge'))['total'] or Decimal('0')
-        
-        total_profit = all_orders.exclude(
+
+        total_profit = windowed_orders.exclude(
             status__in=['canceled', 'cancelled', 'refunded', 'failed']
         ).aggregate(total=Sum('profit'))['total'] or Decimal('0')
 
         total_users = User.objects.count()
         new_users_7d = User.objects.filter(date_joined__gte=seven_days_ago).count()
-        
-        # Revenue last 7 days vs previous 7 days for trend
-        revenue_7d = (
-            Order.objects
-            .filter(created_at__gte=seven_days_ago)
-            .exclude(status__in=['canceled', 'cancelled', 'refunded', 'failed'])
-            .aggregate(total=Sum('charge'))['total'] or Decimal('0')
-        )
-        revenue_prev_7d = (
-            Order.objects
-            .filter(created_at__gte=seven_days_ago - timedelta(days=7), created_at__lt=seven_days_ago)
-            .exclude(status__in=['canceled', 'cancelled', 'refunded', 'failed'])
-            .aggregate(total=Sum('charge'))['total'] or Decimal('0')
-        )
-        
-        revenue_trend = 0
-        if revenue_prev_7d > 0:
-            revenue_trend = round(float((revenue_7d - revenue_prev_7d) / revenue_prev_7d * 100), 1)
-        elif revenue_7d > 0:
-            revenue_trend = 100.0  # New revenue with no previous baseline
 
-        # Active orders (processing or in-progress)
+        # --- Web vs API order split (windowed) ---
+        web_orders = windowed_orders.filter(source='web').count()
+        api_orders = windowed_orders.filter(source='api').count()
+
+        web_revenue = (
+            windowed_orders
+            .filter(source='web')
+            .exclude(status__in=['canceled', 'refunded', 'failed'])
+            .aggregate(total=Sum('charge'))['total'] or Decimal('0')
+        )
+        api_revenue = (
+            windowed_orders
+            .filter(source='api')
+            .exclude(status__in=['canceled', 'refunded', 'failed'])
+            .aggregate(total=Sum('charge'))['total'] or Decimal('0')
+        )
+        
+        # Revenue current window vs previous equal window for trend
+        prev_window_start = window_start - timedelta(days=days)
+        revenue_current = (
+            Order.objects
+            .filter(created_at__gte=window_start)
+            .exclude(status__in=['canceled', 'cancelled', 'refunded', 'failed'])
+            .aggregate(total=Sum('charge'))['total'] or Decimal('0')
+        )
+        revenue_prev = (
+            Order.objects
+            .filter(created_at__gte=prev_window_start, created_at__lt=window_start)
+            .exclude(status__in=['canceled', 'cancelled', 'refunded', 'failed'])
+            .aggregate(total=Sum('charge'))['total'] or Decimal('0')
+        )
+
+        revenue_trend = 0
+        if revenue_prev > 0:
+            revenue_trend = round(float((revenue_current - revenue_prev) / revenue_prev * 100), 1)
+        elif revenue_current > 0:
+            revenue_trend = 100.0
+
+        # Active orders (processing or in-progress) — always real-time, not windowed
         active_orders = all_orders.filter(
             status__in=[Order.Status.PROCESSING, Order.Status.PENDING]
         ).count()
@@ -187,6 +215,7 @@ class AdminAnalyticsView(APIView):
         ]
 
         return Response({
+            'days': days,  # Echo back selected range so frontend can confirm
             'summary': {
                 'total_revenue': float(total_revenue),
                 'total_profit': float(total_profit),
@@ -198,10 +227,19 @@ class AdminAnalyticsView(APIView):
                 'completion_rate': completion_rate,
                 'avg_order_value': round(float(avg_order_value), 2),
                 'total_deposits': float(total_deposits),
+                # Order source breakdown
+                'web_orders': web_orders,
+                'api_orders': api_orders,
+                'web_revenue': float(web_revenue),
+                'api_revenue': float(api_revenue),
             },
             'revenue_chart': revenue_data,
             'user_growth_chart': user_data,
             'popular_services': services_data,
             'order_status': status_data,
             'revenue_by_provider': revenue_by_provider,
+            'source_breakdown': [
+                {'source': 'Web', 'orders': web_orders, 'revenue': float(web_revenue)},
+                {'source': 'API', 'orders': api_orders, 'revenue': float(api_revenue)},
+            ],
         })

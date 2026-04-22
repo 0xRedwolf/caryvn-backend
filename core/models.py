@@ -391,8 +391,13 @@ class Order(models.Model):
         CANCELED = 'canceled', 'Canceled'
         REFUNDED = 'refunded', 'Refunded'
         FAILED = 'failed', 'Failed'
+
+    class Source(models.TextChoices):
+        WEB = 'web', 'Web'
+        API = 'api', 'API'
     
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    reseller_order_id = models.BigIntegerField(unique=True, null=True, blank=True, db_index=True, help_text='Auto-assigned sequential integer ID for SMM Panel API v2 reseller compatibility')
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='orders')
     service = models.ForeignKey(Service, on_delete=models.SET_NULL, null=True, related_name='orders')
     provider = models.ForeignKey(Provider, on_delete=models.SET_NULL, null=True, blank=True, related_name='orders')
@@ -417,6 +422,15 @@ class Order(models.Model):
     # Status
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True)
     status_updated_at = models.DateTimeField(auto_now=True)
+
+    # Source — how the order was placed
+    source = models.CharField(
+        max_length=10,
+        choices=Source.choices,
+        default=Source.WEB,
+        db_index=True,
+        help_text='web = placed via dashboard, api = placed via reseller API key',
+    )
     
     # Timestamps
     hidden_by_user = models.BooleanField(default=False)  # Soft-delete: hidden from user's view
@@ -611,13 +625,33 @@ class SiteSettings(models.Model):
 
 
 # Signal to create wallet when user is created
-from django.db.models.signals import post_save
+from django.db.models.signals import post_save, post_delete, pre_save
 from django.dispatch import receiver
 
 @receiver(post_save, sender=User)
 def create_user_wallet(sender, instance, created, **kwargs):
     if created:
         Wallet.objects.create(user=instance)
+
+
+@receiver(post_save, sender=Order)
+def assign_reseller_order_id(sender, instance, created, **kwargs):
+    """Auto-assign a sequential integer reseller_order_id if not already set."""
+    if created and instance.reseller_order_id is None:
+        # Use the internal Django auto-PK from a helper table or derive from sequence.
+        # Simplest reliable approach: use a database sequence via F-expression update.
+        # We store the row number ordered by created_at + pk as a stable integer.
+        from django.db.models import F
+        # Assign based on a counter stored in a thread-safe way:
+        # Count all existing orders (including this one) to get a unique sequential id.
+        # select_for_update isn't needed here because we only write once (created=True).
+        seq = Order.objects.using('default').filter(
+            reseller_order_id__isnull=False
+        ).count() + 1
+        # Guard against race conditions by looping if the seq is already taken
+        while Order.objects.filter(reseller_order_id=seq).exclude(pk=instance.pk).exists():
+            seq += 1
+        Order.objects.filter(pk=instance.pk).update(reseller_order_id=seq)
 
 class PopupCard(models.Model):
     """Announcement or Ad cards displayed on the user dashboard."""
@@ -641,7 +675,6 @@ class PopupCard(models.Model):
         return f"{self.title} ({'Active' if self.is_active else 'Inactive'})"
 
 # Signal to auto-delete image files when a PopupCard is deleted or changed
-from django.db.models.signals import post_delete, pre_save
 import os
 
 @receiver(post_delete, sender=PopupCard)

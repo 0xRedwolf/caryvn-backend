@@ -117,6 +117,8 @@ DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
+        # NOTE: APIKeyAuthentication is NOT global — it is applied
+        # only on ResellerAPIView via its authentication_classes attribute.
     ],
     'DEFAULT_PERMISSION_CLASSES': [
         'rest_framework.permissions.IsAuthenticated',
@@ -135,6 +137,7 @@ REST_FRAMEWORK = {
         'user': '120/minute',
         'auth': '5/minute',
         'orders': '10/minute',
+        'reseller_api': '200/minute',  # Generous limit for automated reseller scripts
     },
 }
 

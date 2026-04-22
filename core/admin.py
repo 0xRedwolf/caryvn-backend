@@ -87,8 +87,8 @@ class MarkupRuleAdmin(admin.ModelAdmin):
 
 @admin.register(Order)
 class OrderAdmin(admin.ModelAdmin):
-    list_display = ('id_short', 'user', 'service', 'quantity', 'charge', 'profit', 'status', 'provider_order_id', 'created_at')
-    list_filter = ('status', 'created_at')
+    list_display = ('id_short', 'source_badge', 'reseller_order_id', 'user', 'service', 'quantity', 'charge', 'profit', 'status', 'provider_order_id', 'created_at')
+    list_filter = ('source', 'status', 'created_at')
     search_fields = ('user__email', 'link', 'provider_order_id')
     readonly_fields = ('created_at', 'completed_at', 'status_updated_at', 'error_info')
     actions = ['cancel_and_refund', 'retry_with_provider', 'check_provider_status']
@@ -98,12 +98,21 @@ class OrderAdmin(admin.ModelAdmin):
         ('Provider', {'fields': ('provider_order_id', 'start_count', 'remains', 'error_info')}),
         ('Pricing', {'fields': ('provider_rate', 'user_rate', 'charge', 'profit', 'currency')}),
         ('Status', {'fields': ('status', 'status_updated_at', 'completed_at')}),
+        ('Reseller API', {'fields': ('source', 'reseller_order_id')}),
         ('Timestamps', {'fields': ('created_at',)}),
     )
     
     def id_short(self, obj):
         return str(obj.id)[:8]
     id_short.short_description = 'ID'
+
+    def source_badge(self, obj):
+        from django.utils.html import format_html
+        if obj.source == 'api':
+            return format_html('<span style="background:#7c3aed;color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;">API</span>')
+        return format_html('<span style="background:#0284c7;color:#fff;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:600;">Web</span>')
+    source_badge.short_description = 'Source'
+    source_badge.admin_order_field = 'source'
     
     def error_info(self, obj):
         if not obj.provider_order_id and obj.status in ('pending', 'failed'):

@@ -9,11 +9,13 @@ from django.conf.urls.static import static
 
 from django.urls import re_path
 from django.views.static import serve
+from core.views.reseller_api_views import ResellerAPIView
 
 urlpatterns = [
     path('admin/', admin.site.urls),
     path('api/', include('core.urls')),
     path('api/token/refresh/', TokenRefreshView.as_view(), name='token_refresh'),
+    path('api/v2/', ResellerAPIView.as_view(), name='reseller-api'),
 ]
 
 if settings.DEBUG:
