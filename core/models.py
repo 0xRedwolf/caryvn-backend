@@ -638,17 +638,9 @@ def create_user_wallet(sender, instance, created, **kwargs):
 def assign_reseller_order_id(sender, instance, created, **kwargs):
     """Auto-assign a sequential integer reseller_order_id if not already set."""
     if created and instance.reseller_order_id is None:
-        # Use the internal Django auto-PK from a helper table or derive from sequence.
-        # Simplest reliable approach: use a database sequence via F-expression update.
-        # We store the row number ordered by created_at + pk as a stable integer.
-        from django.db.models import F
-        # Assign based on a counter stored in a thread-safe way:
-        # Count all existing orders (including this one) to get a unique sequential id.
-        # select_for_update isn't needed here because we only write once (created=True).
-        seq = Order.objects.using('default').filter(
-            reseller_order_id__isnull=False
-        ).count() + 1
-        # Guard against race conditions by looping if the seq is already taken
+        from django.db.models import Max
+        max_id = Order.objects.using('default').aggregate(m=Max('reseller_order_id'))['m'] or 0
+        seq = max_id + 1
         while Order.objects.filter(reseller_order_id=seq).exclude(pk=instance.pk).exists():
             seq += 1
         Order.objects.filter(pk=instance.pk).update(reseller_order_id=seq)

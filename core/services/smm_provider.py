@@ -309,6 +309,32 @@ class SMMProvider:
         )
         
         return response
+
+    def get_refill_status(self, refill_id: str, user=None, order=None) -> Dict[str, Any]:
+        """
+        Get status of a refill request from the provider.
+        
+        Args:
+            refill_id: Provider refill ID
+            user: User requesting status
+            order: Order object for logging
+            
+        Returns:
+            Dict with 'status' (e.g., 'Completed', 'Rejected', 'Pending')
+        """
+        if not self.api_url or not self.api_key or self.api_key == 'demo-key':
+            import random
+            statuses = ['Pending', 'Completed', 'Rejected']
+            return {'status': random.choice(statuses)}
+
+        response = self._make_request(
+            'refill_status',
+            data={'refill': refill_id},
+            user=user,
+            order=order
+        )
+
+        return response
     
     def _get_demo_services(self) -> List[Dict[str, Any]]:
         """Return demo services for development/testing."""

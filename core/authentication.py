@@ -23,8 +23,20 @@ class APIKeyAuthentication(BaseAuthentication):
     """
 
     def authenticate(self, request):
-        # Look for the key in POST data first (form-encoded body — standard for SMM panels)
-        api_key = request.POST.get('key') or request.GET.get('key')
+        api_key = None
+
+        # 1. Check query parameters (?key=...)
+        if hasattr(request, 'query_params') and request.query_params.get('key'):
+            api_key = request.query_params.get('key')
+        elif hasattr(request, 'GET') and request.GET.get('key'):
+            api_key = request.GET.get('key')
+
+        # 2. Check body (Form-urlencoded or JSON payload)
+        if not api_key:
+            if hasattr(request, 'data') and isinstance(request.data, dict) and request.data.get('key'):
+                api_key = request.data.get('key')
+            elif hasattr(request, 'POST') and request.POST.get('key'):
+                api_key = request.POST.get('key')
 
         if not api_key:
             # No key found — let other authenticators (JWT) have a go

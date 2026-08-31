@@ -65,8 +65,10 @@ class ResellerAPIView(APIView):
             return self._action_balance(request)
         elif action == 'refill':
             return self._action_refill(request)
+        elif action == 'refill_status':
+            return self._action_refill_status(request)
         else:
-            return _error('Invalid action. Supported: services, add, status, balance, refill')
+            return _error('Invalid action. Supported: services, add, status, balance, refill, refill_status')
 
     # ─────────────────────────────────────────────────────────────────────────
     # action=services
@@ -242,6 +244,7 @@ class ResellerAPIView(APIView):
 
         # ── Refresh to get reseller_order_id (assigned by post_save signal) ──
         order.refresh_from_db()
+        cache.delete(lock_key)
 
         # ── Dispatch Celery task ──────────────────────────────────────────
         order_id_str = str(order.id)
@@ -260,42 +263,11 @@ class ResellerAPIView(APIView):
         return Response({'order': order.reseller_order_id}, status=status.HTTP_201_CREATED)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # action=status
+    # action=status (Single & Batch Support)
     # ─────────────────────────────────────────────────────────────────────────
 
-    def _action_status(self, request):
-        """
-        Get the status of an order by reseller_order_id.
-
-        Request params:
-            order  <int>  — The reseller_order_id returned by action=add
-
-        Response:
-            {
-                "charge": "1.50",
-                "start_count": "1500",
-                "status": "In progress",
-                "remains": "700",
-                "currency": "NGN"
-            }
-        """
-        order_id_raw = request.data.get('order')
-        if not order_id_raw:
-            return _error('Missing required parameter: order')
-
-        try:
-            reseller_order_id = int(order_id_raw)
-        except (TypeError, ValueError):
-            return _error('Parameter "order" must be an integer')
-
-        try:
-            order = Order.objects.select_related('service', 'provider').get(
-                reseller_order_id=reseller_order_id,
-                user=request.user,
-            )
-        except Order.DoesNotExist:
-            return _error('Order not found')
-
+    def _format_single_order_status(self, order: Order, user) -> dict:
+        """Format an Order instance as standard SMM v2 status dict."""
         # Refresh from provider if active
         if order.provider_order_id and order.provider and order.status in [
             Order.Status.PENDING, Order.Status.PROCESSING, Order.Status.IN_PROGRESS,
@@ -304,7 +276,7 @@ class ResellerAPIView(APIView):
                 client = get_provider_client(order.provider)
                 result = client.get_order_status(
                     order.provider_order_id,
-                    user=request.user,
+                    user=user,
                     order=order,
                 )
                 if 'status' in result:
@@ -312,7 +284,6 @@ class ResellerAPIView(APIView):
             except SMMProviderError:
                 pass  # Return cached status on provider error
 
-        # Map internal status to SMM Panel v2 display strings
         STATUS_MAP = {
             Order.Status.PENDING: 'Pending',
             Order.Status.PROCESSING: 'Processing',
@@ -324,13 +295,117 @@ class ResellerAPIView(APIView):
             Order.Status.FAILED: 'Failed',
         }
 
-        return Response({
+        return {
             'charge': str(order.charge),
             'start_count': str(order.start_count) if order.start_count is not None else '0',
             'status': STATUS_MAP.get(order.status, order.status.capitalize()),
             'remains': str(order.remains) if order.remains is not None else '0',
             'currency': order.currency,
-        })
+        }
+
+    def _action_status(self, request):
+        """
+        Get status of single or multiple orders by reseller_order_id.
+
+        Request params:
+            order   <int>  — Single reseller_order_id
+            -- OR --
+            orders  <str>  — Comma-separated reseller_order_ids e.g. "1,2,3"
+
+        Single Response:
+            {"charge": "1.50", "start_count": "1500", "status": "In progress", "remains": "700", "currency": "NGN"}
+
+        Multiple Response:
+            {
+                "1": {"charge": "1.50", "start_count": "1500", "status": "In progress", "remains": "700", "currency": "NGN"},
+                "2": {"error": "Incorrect order ID"}
+            }
+        """
+        order_raw = request.data.get('order')
+        orders_raw = request.data.get('orders')
+
+        if not order_raw and not orders_raw:
+            return _error('Missing required parameter: order or orders')
+
+        # ── Batch orders check ────────────────────────────────────────────
+        if orders_raw is not None:
+            import uuid
+            from django.db.models import Q
+
+            if isinstance(orders_raw, list):
+                raw_ids = [str(x).strip() for x in orders_raw]
+            else:
+                raw_ids = [x.strip() for x in str(orders_raw).split(',') if x.strip()]
+
+            if not raw_ids:
+                return _error('Parameter "orders" must contain at least one order ID')
+
+            int_ids = []
+            uuid_ids = []
+            for raw_id in raw_ids:
+                try:
+                    int_ids.append(int(raw_id))
+                except (TypeError, ValueError):
+                    pass
+                try:
+                    uuid_ids.append(uuid.UUID(raw_id))
+                except (TypeError, ValueError):
+                    pass
+
+            q = Q()
+            if int_ids:
+                q |= Q(reseller_order_id__in=int_ids)
+            if uuid_ids:
+                q |= Q(id__in=uuid_ids)
+
+            orders_qs = Order.objects.select_related('service', 'provider').filter(
+                q, user=request.user
+            ) if (int_ids or uuid_ids) else []
+
+            # Map by string of reseller_order_id and UUID id for fast lookup
+            order_dict = {}
+            for o in orders_qs:
+                if o.reseller_order_id is not None:
+                    order_dict[str(o.reseller_order_id)] = o
+                order_dict[str(o.id)] = o
+
+            response_data = {}
+            for raw_id in raw_ids:
+                if raw_id in order_dict:
+                    response_data[raw_id] = self._format_single_order_status(order_dict[raw_id], request.user)
+                else:
+                    response_data[raw_id] = {'error': 'Incorrect order ID'}
+
+            return Response(response_data)
+
+        # ── Single order check (Integer or UUID) ──────────────────────────
+        import uuid
+        order = None
+        raw_str = str(order_raw).strip()
+
+        try:
+            reseller_order_id = int(raw_str)
+            order = Order.objects.select_related('service', 'provider').filter(
+                reseller_order_id=reseller_order_id,
+                user=request.user,
+            ).first()
+        except (TypeError, ValueError):
+            pass
+
+        if not order:
+            try:
+                order_uuid = uuid.UUID(raw_str)
+                order = Order.objects.select_related('service', 'provider').filter(
+                    id=order_uuid,
+                    user=request.user,
+                ).first()
+            except (TypeError, ValueError, AttributeError):
+                pass
+
+        if not order:
+            return _error('Order not found')
+
+        return Response(self._format_single_order_status(order, request.user))
 
     # ─────────────────────────────────────────────────────────────────────────
     # action=balance
@@ -358,26 +433,40 @@ class ResellerAPIView(APIView):
         Request a refill for a completed order.
 
         Request params:
-            order  <int>  — The reseller_order_id
+            order  <int/uuid> — The reseller_order_id or order UUID
 
         Response (success):
             {"refill": <refill_id>}
         """
+        import uuid
+
         order_id_raw = request.data.get('order')
         if not order_id_raw:
             return _error('Missing required parameter: order')
 
-        try:
-            reseller_order_id = int(order_id_raw)
-        except (TypeError, ValueError):
-            return _error('Parameter "order" must be an integer')
+        raw_str = str(order_id_raw).strip()
+        order = None
 
         try:
-            order = Order.objects.select_related('service', 'provider').get(
+            reseller_order_id = int(raw_str)
+            order = Order.objects.select_related('service', 'provider').filter(
                 reseller_order_id=reseller_order_id,
                 user=request.user,
-            )
-        except Order.DoesNotExist:
+            ).first()
+        except (TypeError, ValueError):
+            pass
+
+        if not order:
+            try:
+                order_uuid = uuid.UUID(raw_str)
+                order = Order.objects.select_related('service', 'provider').filter(
+                    id=order_uuid,
+                    user=request.user,
+                ).first()
+            except (TypeError, ValueError, AttributeError):
+                pass
+
+        if not order:
             return _error('Order not found')
 
         if not order.service or not order.service.has_refill:
@@ -405,6 +494,76 @@ class ResellerAPIView(APIView):
             return _error(str(result['error']))
         else:
             return _error('Refill request failed. Please try again.', 502)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # action=refill_status
+    # ─────────────────────────────────────────────────────────────────────────
+
+    def _action_refill_status(self, request):
+        """
+        Get status of a refill request.
+
+        Request params:
+            refill   <str/int> — Single refill ID
+            -- OR --
+            refills  <str>     — Comma-separated refill IDs e.g. "101,102"
+
+        Single Response:
+            {"status": "Completed"}
+
+        Multiple Response:
+            {
+                "101": {"status": "Completed"},
+                "102": {"status": "Pending"}
+            }
+        """
+        from ..models import Provider
+
+        refill_raw = request.data.get('refill')
+        refills_raw = request.data.get('refills')
+
+        if not refill_raw and not refills_raw:
+            return _error('Missing required parameter: refill or refills')
+
+        provider = Provider.objects.filter(is_active=True).first()
+        if not provider:
+            return _error('No active provider configured to check refill status', 503)
+
+        client = get_provider_client(provider)
+
+        # Multiple refills
+        if refills_raw is not None:
+            if isinstance(refills_raw, list):
+                raw_ids = [str(x).strip() for x in refills_raw]
+            else:
+                raw_ids = [x.strip() for x in str(refills_raw).split(',') if x.strip()]
+
+            response_data = {}
+            for r_id in raw_ids:
+                try:
+                    res = client.get_refill_status(r_id, user=request.user)
+                    if 'status' in res:
+                        response_data[r_id] = {'status': res['status']}
+                    elif 'error' in res:
+                        response_data[r_id] = {'error': str(res['error'])}
+                    else:
+                        response_data[r_id] = {'status': 'Pending'}
+                except SMMProviderError as e:
+                    response_data[r_id] = {'error': str(e)}
+
+            return Response(response_data)
+
+        # Single refill
+        try:
+            res = client.get_refill_status(str(refill_raw), user=request.user)
+            if 'status' in res:
+                return Response({'status': res['status']})
+            elif 'error' in res:
+                return _error(str(res['error']))
+            else:
+                return Response({'status': 'Pending'})
+        except SMMProviderError as e:
+            return _error(str(e), 502)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
