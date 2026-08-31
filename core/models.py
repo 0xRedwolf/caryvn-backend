@@ -457,6 +457,16 @@ class Order(models.Model):
         self.profit = self.charge - provider_cost
         return self.profit
 
+    def save(self, *args, **kwargs):
+        if self.reseller_order_id is None:
+            from django.db.models import Max
+            max_id = Order.objects.using('default').aggregate(m=Max('reseller_order_id'))['m'] or 0
+            seq = max_id + 1
+            while Order.objects.filter(reseller_order_id=seq).exclude(pk=self.pk).exists():
+                seq += 1
+            self.reseller_order_id = seq
+        super().save(*args, **kwargs)
+
 
 class Ticket(models.Model):
     """Support ticket."""
@@ -637,13 +647,14 @@ def create_user_wallet(sender, instance, created, **kwargs):
 @receiver(post_save, sender=Order)
 def assign_reseller_order_id(sender, instance, created, **kwargs):
     """Auto-assign a sequential integer reseller_order_id if not already set."""
-    if created and instance.reseller_order_id is None:
+    if instance.reseller_order_id is None:
         from django.db.models import Max
         max_id = Order.objects.using('default').aggregate(m=Max('reseller_order_id'))['m'] or 0
         seq = max_id + 1
         while Order.objects.filter(reseller_order_id=seq).exclude(pk=instance.pk).exists():
             seq += 1
         Order.objects.filter(pk=instance.pk).update(reseller_order_id=seq)
+        instance.reseller_order_id = seq
 
 class PopupCard(models.Model):
     """Announcement or Ad cards displayed on the user dashboard."""

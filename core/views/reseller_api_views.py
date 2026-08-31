@@ -222,7 +222,7 @@ class ResellerAPIView(APIView):
             )
 
         # ── Create order ───────────────────────────────────────────────────
-        order = Order.objects.create(
+        order = Order(
             user=request.user,
             service=service,
             provider=service.provider,
@@ -235,15 +235,14 @@ class ResellerAPIView(APIView):
             status=Order.Status.PENDING,
             source=Order.Source.API,  # Tag this as an API-sourced order
         )
-
         order.calculate_profit()
         order.save()
 
         # ── Deduct wallet ─────────────────────────────────────────────────
         wallet.charge(charge, f'Order #{str(order.id)[:8]} - {service.name}')
 
-        # ── Refresh to get reseller_order_id (assigned by post_save signal) ──
-        order.refresh_from_db()
+        if not order.reseller_order_id:
+            order.refresh_from_db()
         cache.delete(lock_key)
 
         # ── Dispatch Celery task ──────────────────────────────────────────

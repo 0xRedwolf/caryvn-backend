@@ -322,7 +322,7 @@ class OrderCreateView(APIView):
             )
 
         # Create order record
-        order = Order.objects.create(
+        order = Order(
             user=request.user,
             service=service,
             provider=service.provider,
@@ -334,8 +334,6 @@ class OrderCreateView(APIView):
             charge=charge,
             status=Order.Status.PENDING
         )
-
-        # Calculate and store profit
         order.calculate_profit()
         order.save()
 
@@ -760,7 +758,36 @@ class AdminDashboardView(APIView):
         
         # Keep legacy field for backwards compat
         first_balance = next(iter(provider_balances.values()), {}).get('balance', 'N/A')
-        
+
+        # Total User Deposits & Total Balances
+        total_user_deposits = Transaction.objects.filter(
+            type=Transaction.Type.DEPOSIT, status=Transaction.Status.SUCCESS
+        ).aggregate(s=Sum('amount'))['s'] or 0
+
+        total_user_balances = Wallet.objects.aggregate(s=Sum('balance'))['s'] or 0
+
+        # Ranked active users today (by latest activity timestamp)
+        from django.db.models import Max
+        from ..models import UserActivity
+
+        active_users_ranked_today = []
+        user_activities_today = (
+            UserActivity.objects.filter(created_at__date=today)
+            .values('user__id', 'user__username', 'user__email', 'user__first_name', 'user__last_name')
+            .annotate(latest_activity=Max('created_at'), action=Max('action'))
+            .order_by('-latest_activity')[:10]
+        )
+
+        for u in user_activities_today:
+            active_users_ranked_today.append({
+                'user_id': str(u['user__id']),
+                'username': u['user__username'],
+                'email': u['user__email'],
+                'name': f"{u['user__first_name'] or ''} {u['user__last_name'] or ''}".strip() or u['user__username'],
+                'latest_activity': u['latest_activity'].isoformat() if u['latest_activity'] else None,
+                'action': u['action'] or 'page_visit',
+            })
+
         return Response({
             'total_users': total_users,
             'active_users_today': active_users_today,
@@ -772,8 +799,11 @@ class AdminDashboardView(APIView):
             'today_revenue': str(today_metrics['revenue'] or 0),
             'today_profit': str(today_metrics['profit'] or 0),
             'pending_tickets': pending_tickets,
+            'total_user_deposits': str(total_user_deposits),
+            'total_user_balances': str(total_user_balances),
             'provider_balance': first_balance,
             'provider_balances': provider_balances,
+            'active_users_ranked_today': active_users_ranked_today,
         })
 
 
