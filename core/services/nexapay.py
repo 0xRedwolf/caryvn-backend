@@ -205,19 +205,31 @@ class NexaPayPaymentService:
                 timeout=30,
             )
             data = response.json()
+            logger.info(f'NexaPay requery response status={response.status_code}, ref={merchant_reference}, body={data}')
             if response.status_code == 200:
                 accounts = data.get('data') or data.get('virtualAccounts') or []
                 if isinstance(accounts, list):
                     for acc in accounts:
-                        if (
-                            acc.get('merchantReference') == merchant_reference or
-                            acc.get('reference') == merchant_reference
-                        ):
+                        m_ref = (
+                            acc.get('merchantReference') or
+                            acc.get('reference') or
+                            acc.get('merchant_reference') or
+                            acc.get('transaction_ref') or
+                            acc.get('transactionReference') or ''
+                        )
+                        if str(m_ref).strip() == str(merchant_reference).strip():
+                            acc_status = (
+                                acc.get('paymentStatus') or
+                                acc.get('payment_status') or
+                                acc.get('status') or
+                                acc.get('fundingStatus') or
+                                acc.get('state') or ''
+                            )
                             return {
                                 'found': True,
-                                'status': acc.get('status'),
-                                'account_number': acc.get('accountNumber'),
-                                'expires_at': acc.get('expiresAt'),
+                                'status': str(acc_status),
+                                'account_number': acc.get('accountNumber') or acc.get('account_number'),
+                                'expires_at': acc.get('expiresAt') or acc.get('expires_at'),
                                 'data': acc,
                             }
                 return {'found': False, 'status': 'NOT_FOUND'}

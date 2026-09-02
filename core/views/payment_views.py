@@ -686,8 +686,18 @@ class VerifyNexaPayTopupView(APIView):
         try:
             from core.services.nexapay import nexapay_service, NexaPayPaymentError
             requery = nexapay_service.requery_virtual_account(reference)
+            logger.info(f"NexaPay poll requery result for ref={reference}: {requery}")
+
             # If NexaPay recorded payment or completed
-            if requery.get('found') and str(requery.get('status', '')).upper() in ('PAID', 'SUCCESS', 'COMPLETED'):
+            status_str = str(requery.get('status', '')).upper()
+            data_dict = requery.get('data') if isinstance(requery.get('data'), dict) else {}
+            is_confirmed = requery.get('found') and (
+                status_str in ('PAID', 'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'CREDITED', 'RECEIVED', 'FUNDED')
+                or data_dict.get('isPaid') is True
+                or data_dict.get('paid') is True
+                or data_dict.get('status') in ('PAID', 'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'CREDITED')
+            )
+            if is_confirmed:
                 new_balance = wallet.confirm_deposit(transaction)
                 try:
                     from core.services.email_service import email_service
@@ -704,7 +714,7 @@ class VerifyNexaPayTopupView(APIView):
                     'amount': str(transaction.amount),
                 })
         except Exception as e:
-            logger.debug(f'NexaPay poll requery: {e}')
+            logger.error(f'NexaPay poll requery error: {e}')
 
         return Response({
             'status': 'pending',
