@@ -817,7 +817,10 @@ class AdminUserListView(APIView):
         if search:
             from django.db.models import Q
             users = users.filter(
-                Q(email__icontains=search) | Q(username__icontains=search)
+                Q(email__icontains=search) |
+                Q(username__icontains=search) |
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search)
             )
         
         limit = int(request.query_params.get('limit', 20))
@@ -1265,8 +1268,40 @@ class AdminVerifyTransactionView(APIView):
         if transaction.status != Transaction.Status.PENDING:
             return Response({'error': f'Transaction is already {transaction.status}'}, status=status.HTTP_400_BAD_REQUEST)
             
-        # Non-Squad gateways (manual bank, binance_pay, on_chain_*): approve directly
         is_squad = (transaction.payment_gateway == 'squad' and bool(transaction.payment_reference))
+        is_nexapay = (transaction.payment_gateway == 'nexapay' and bool(transaction.payment_reference))
+
+        # NexaPay gateway: requery & credit user
+        if is_nexapay:
+            try:
+                from ..services.nexapay import nexapay_service
+                requery_res = None
+                try:
+                    requery_res = nexapay_service.requery_virtual_account(transaction.payment_reference)
+                except Exception as e:
+                    logger.warning(f'NexaPay requery during admin verify: {e}')
+
+                wallet = transaction.wallet
+                new_balance = wallet.confirm_deposit(transaction)
+                try:
+                    email_service.send_topup_success(
+                        user=wallet.user,
+                        amount=transaction.amount,
+                        new_balance=new_balance,
+                    )
+                except Exception as e:
+                    logger.warning(f'Topup success email failed (non-critical): {e}')
+
+                return Response({
+                    'message': 'NexaPay transaction verified and credited successfully',
+                    'new_balance': str(new_balance),
+                    'credited_amount': str(transaction.amount),
+                    'gateway_details': requery_res,
+                })
+            except Exception as e:
+                return Response({'error': f'Verification failed: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Non-Squad gateways (manual bank, binance_pay, on_chain_*): approve directly
         if not is_squad:
             is_crypto = transaction.payment_gateway in (
                 'binance_pay', 'on_chain_usdt_trc20', 'on_chain_usdt_bep20', 'on_chain_sol'
@@ -1355,6 +1390,39 @@ class AdminVerifyTransactionView(APIView):
                 return Response({'error': 'Squad verification failed (not successful)'}, status=status.HTTP_400_BAD_REQUEST)
         except Exception as e:
             return Response({'error': f'Verification failed: {str(e)}'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class AdminRequeryTransactionView(APIView):
+    """Admin manually queries payment gateway status for a pending transaction."""
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request, transaction_id):
+        try:
+            transaction = Transaction.objects.get(id=transaction_id)
+        except Transaction.DoesNotExist:
+            return Response({'error': 'Transaction not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        if not transaction.payment_reference:
+            return Response({'error': 'Transaction has no payment reference'}, status=status.HTTP_400_BAD_REQUEST)
+
+        gateway = transaction.payment_gateway
+        if gateway == 'nexapay':
+            from ..services.nexapay import nexapay_service, NexaPayPaymentError
+            try:
+                result = nexapay_service.requery_virtual_account(transaction.payment_reference)
+                return Response({'gateway': 'nexapay', 'result': result})
+            except NexaPayPaymentError as e:
+                return Response({'error': str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        elif gateway == 'squad':
+            from ..services.squad import squad_service, SquadPaymentError
+            try:
+                result = squad_service.verify_payment(transaction.payment_reference)
+                return Response({'gateway': 'squad', 'result': result})
+            except SquadPaymentError as e:
+                return Response({'error': str(e)}, status=status.HTTP_502_BAD_GATEWAY)
+
+        return Response({'message': f'Requery is not supported for gateway {gateway}'}, status=status.HTTP_400_BAD_REQUEST)
 
 
 class AdminFailTransactionView(APIView):
@@ -1597,8 +1665,11 @@ class SiteSettingsView(APIView):
             'crypto_sol': settings.crypto_sol,
             # Payment method toggles
             'squad_enabled': settings.squad_enabled,
+            'nexapay_enabled': settings.nexapay_enabled,
             'manual_bank_enabled': settings.manual_bank_enabled,
             'crypto_enabled': settings.crypto_enabled,
+            # Alerts
+            'provider_balance_alert_threshold': str(getattr(settings, 'provider_balance_alert_threshold', '15.00')),
         })
         
     def post(self, request):
@@ -1632,10 +1703,20 @@ class SiteSettingsView(APIView):
         # Payment method toggles
         if 'squad_enabled' in request.data:
             settings.squad_enabled = bool(request.data['squad_enabled'])
+        if 'nexapay_enabled' in request.data:
+            settings.nexapay_enabled = bool(request.data['nexapay_enabled'])
         if 'manual_bank_enabled' in request.data:
             settings.manual_bank_enabled = bool(request.data['manual_bank_enabled'])
         if 'crypto_enabled' in request.data:
             settings.crypto_enabled = bool(request.data['crypto_enabled'])
+
+        # Alert threshold
+        if 'provider_balance_alert_threshold' in request.data:
+            try:
+                from decimal import Decimal
+                settings.provider_balance_alert_threshold = Decimal(str(request.data['provider_balance_alert_threshold']))
+            except Exception:
+                pass
 
         # Handle QR image upload — convert to base64 data URI so it survives Railway redeploys
         if 'binance_pay_qr' in request.FILES:
@@ -1660,6 +1741,7 @@ class SiteSettingsView(APIView):
             'crypto_sol': settings.crypto_sol,
             # Payment method toggles
             'squad_enabled': settings.squad_enabled,
+            'nexapay_enabled': settings.nexapay_enabled,
             'manual_bank_enabled': settings.manual_bank_enabled,
             'crypto_enabled': settings.crypto_enabled,
         })
@@ -1814,4 +1896,98 @@ class AdminUpdateProviderView(APIView):
             },
             'services_repriced': services_updated,
         })
+
+
+class AdminNotificationListView(APIView):
+    """
+    List unread/recent admin notifications and mark them as read.
+    Restricted to authenticated staff users.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def get(self, request):
+        from core.models import AdminNotification
+
+        notifications = AdminNotification.objects.all().order_by('-created_at')[:50]
+        unread_count = AdminNotification.objects.filter(is_read=False).count()
+
+        results = []
+        for n in notifications:
+            results.append({
+                'id': str(n.id),
+                'type': n.notification_type,
+                'severity': n.severity,
+                'title': n.title,
+                'message': n.message,
+                'data': n.data,
+                'is_read': n.is_read,
+                'created_at': n.created_at.isoformat(),
+            })
+
+        return Response({
+            'unread_count': unread_count,
+            'notifications': results,
+        })
+
+    def post(self, request):
+        """Mark one or all notifications as read."""
+        from core.models import AdminNotification
+
+        notification_id = request.data.get('notification_id')
+        mark_all = request.data.get('all', False)
+
+        if mark_all:
+            updated = AdminNotification.objects.filter(is_read=False).update(is_read=True)
+            return Response({'message': f'Marked {updated} notifications as read', 'updated': updated})
+
+        if notification_id:
+            try:
+                item = AdminNotification.objects.get(id=notification_id)
+                item.is_read = True
+                item.save(update_fields=['is_read'])
+                return Response({'message': 'Notification marked as read', 'id': notification_id})
+            except AdminNotification.DoesNotExist:
+                return Response({'error': 'Notification not found'}, status=status.HTTP_404_NOT_FOUND)
+
+        return Response({'error': 'Specify notification_id or all=True'}, status=status.HTTP_400_BAD_REQUEST)
+
+
+class AdminNotificationTestView(APIView):
+    """
+    Trigger a test admin alert (e.g. simulated low provider balance)
+    so the admin can test in-app and browser desktop notification permissions.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request):
+        from decimal import Decimal
+        from core.models import AdminNotification, Provider
+
+        provider = Provider.objects.filter(is_active=True).first()
+        provider_name = provider.name if provider else 'Peakerr SMM'
+
+        notification = AdminNotification.objects.create(
+            notification_type=AdminNotification.NotificationType.LOW_PROVIDER_BALANCE,
+            severity=AdminNotification.Severity.WARNING,
+            title=f"Test Alert: Low Balance at {provider_name}",
+            message=f"This is a test notification. {provider_name} simulated balance is critically low at $4.50. Top up to ensure uninterrupted orders.",
+            data={
+                'test': True,
+                'provider_name': provider_name,
+                'balance': '4.50',
+                'currency': 'USD',
+            }
+        )
+
+        return Response({
+            'message': 'Test notification created successfully',
+            'notification': {
+                'id': str(notification.id),
+                'title': notification.title,
+                'message': notification.message,
+                'severity': notification.severity,
+                'created_at': notification.created_at.isoformat(),
+            }
+        }, status=status.HTTP_201_CREATED)
+
 

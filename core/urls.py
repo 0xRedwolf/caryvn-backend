@@ -24,17 +24,19 @@ from .views import (
     AdminToggleServiceActiveView, AdminBulkToggleServiceActiveView,
     SiteSettingsView, AdminToggleShowInactiveView,
     AdminOrderMarkCompletedView, AdminUserAdjustBalanceView,
-    AdminVerifyTransactionView, AdminFailTransactionView, AdminOrderRefillView,
+    AdminVerifyTransactionView, AdminFailTransactionView, AdminRequeryTransactionView, AdminOrderRefillView,
     AdminPendingDepositsView, AdminPendingDepositsCountView,
     AdminAllTransactionsView,
     AdminTicketListView, AdminTicketDetailView, AdminPendingTicketsCountView,
     AdminProviderListView, AdminUpdateProviderView, AdminServiceCategoryNamesView,
-    ActivePopupCardsView, AdminPopupCardsView, AdminPopupCardDetailView
+    ActivePopupCardsView, AdminPopupCardsView, AdminPopupCardDetailView,
+    AdminNotificationListView, AdminNotificationTestView,
 )
 from .views.export_views import AdminExportUsersCSVView
 from .views.payment_views import (
     InitiateTopupView, VerifyTopupView, SquadWebhookView,
-    InitiateManualTopupView, InitiateCryptoTopupView
+    InitiateManualTopupView, InitiateCryptoTopupView,
+    InitiateNexaPayTopupView, VerifyNexaPayTopupView, NexaPayWebhookView
 )
 from .views.analytics_views import AdminAnalyticsView
 from .views.activity_views import LogActivityView, AdminUserActivityView
@@ -59,9 +61,12 @@ urlpatterns = [
     path('wallet/topup/manual/', InitiateManualTopupView.as_view(), name='topup-manual'),
     path('wallet/topup/crypto/', InitiateCryptoTopupView.as_view(), name='topup-crypto'),
     path('wallet/topup/verify/', VerifyTopupView.as_view(), name='topup-verify'),
+    path('wallet/topup/nexapay/initiate/', InitiateNexaPayTopupView.as_view(), name='topup-nexapay-initiate'),
+    path('wallet/topup/nexapay/status/', VerifyNexaPayTopupView.as_view(), name='topup-nexapay-status'),
     
     # Payment webhooks (no auth — validated by signature)
     path('payments/squad/webhook/', SquadWebhookView.as_view(), name='squad-webhook'),
+    path('payments/nexapay/webhook/', NexaPayWebhookView.as_view(), name='nexapay-webhook'),
     
     # Service endpoints
     path('services/', ServiceListView.as_view(), name='services'),
@@ -111,6 +116,7 @@ urlpatterns = [
     path('admin/transactions/pending/count/', AdminPendingDepositsCountView.as_view(), name='admin-pending-transactions-count'),
     path('admin/transactions/<uuid:transaction_id>/verify/', AdminVerifyTransactionView.as_view(), name='admin-transaction-verify'),
     path('admin/transactions/<uuid:transaction_id>/fail/', AdminFailTransactionView.as_view(), name='admin-transaction-fail'),
+    path('admin/transactions/<uuid:transaction_id>/requery/', AdminRequeryTransactionView.as_view(), name='admin-transaction-requery'),
     path('admin/users/<uuid:user_id>/activity/', AdminUserActivityView.as_view(), name='admin-user-activity'),
     path('admin/users/<uuid:user_id>/delete/', AdminDeleteUserView.as_view(), name='admin-user-delete'),
     path('admin/logs/<int:log_id>/delete/', AdminDeleteLogView.as_view(), name='admin-log-delete'),
@@ -133,6 +139,10 @@ urlpatterns = [
     # Admin Popup endpoints
     path('admin/popups/', AdminPopupCardsView.as_view(), name='admin-popups'),
     path('admin/popups/<int:popup_id>/', AdminPopupCardDetailView.as_view(), name='admin-popup-detail'),
+
+    # Admin Notifications endpoints
+    path('admin/notifications/', AdminNotificationListView.as_view(), name='admin-notifications'),
+    path('admin/notifications/test/', AdminNotificationTestView.as_view(), name='admin-notifications-test'),
     
     # Activity tracking
     path('activity/', LogActivityView.as_view(), name='log-activity'),

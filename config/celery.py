@@ -32,5 +32,10 @@ app.conf.beat_schedule = {
         'task': 'core.tasks.sync_services_task',
         'schedule': 6 * 60 * 60,  # Every 6 hours
     },
+    # Check active SMM provider balances against alert threshold — every 15 minutes
+    'check-provider-balances-every-15-min': {
+        'task': 'core.tasks.check_provider_balances_task',
+        'schedule': 15 * 60,  # Every 15 minutes
+    },
 }
 app.conf.timezone = 'UTC'

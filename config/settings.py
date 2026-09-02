@@ -230,6 +230,12 @@ SQUAD_SECRET_KEY = env('SQUAD_SECRET_KEY', default='')
 SQUAD_PUBLIC_KEY = env('SQUAD_PUBLIC_KEY', default='')
 SQUAD_BASE_URL = env('SQUAD_BASE_URL', default='https://sandbox-api-d.squadco.com')
 
+# NexaPay Payment Gateway
+NEXAPAY_API_KEY = env('NEXAPAY_API_KEY', default='')
+NEXAPAY_BUSINESS_ID = env('NEXAPAY_BUSINESS_ID', default='')
+NEXAPAY_WEBHOOK_SECRET = env('NEXAPAY_WEBHOOK_SECRET', default='')
+NEXAPAY_BASE_URL = env('NEXAPAY_BASE_URL', default='https://api.nexapay.ng/api/v1/business')
+
 # Email Configuration (SMTP settings kept for reference but unused — see email_service.py)
 EMAIL_BACKEND = env('EMAIL_BACKEND', default='django.core.mail.backends.console.EmailBackend')
 EMAIL_HOST = env('EMAIL_HOST', default='smtp.gmail.com')

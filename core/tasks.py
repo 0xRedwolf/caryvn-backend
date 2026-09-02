@@ -78,6 +78,26 @@ def submit_order_to_provider(self, order_id: str, comments=None):
             order.status = Order.Status.FAILED
             order.save(update_fields=['status'])
         logger.error(f'Order {order_id} failed → auto-refunded ₦{order.charge}: {provider_error}')
+
+        # Check if provider error is due to low balance
+        if any(w in provider_error.lower() for w in ('balance', 'funds', 'credit', 'not enough')):
+            try:
+                from core.models import AdminNotification
+                provider_name = order.provider.name if order.provider else 'Provider'
+                AdminNotification.objects.create(
+                    notification_type=AdminNotification.NotificationType.LOW_PROVIDER_BALANCE,
+                    severity=AdminNotification.Severity.CRITICAL,
+                    title=f"Order Failed: Low Balance at {provider_name}",
+                    message=f"Order #{str(order.id)[:8]} failed because {provider_name} has insufficient balance: '{provider_error}'. The customer was auto-refunded. Please top up your provider balance immediately.",
+                    data={
+                        'order_id': str(order.id),
+                        'provider_name': provider_name,
+                        'provider_id': order.provider.id if order.provider else None,
+                        'charge': str(order.charge),
+                    }
+                )
+            except Exception as notify_err:
+                logger.warning(f"Failed to record admin notification for low balance order failure: {notify_err}")
         return
 
     # Success — send confirmation email (non-critical, never blocks)
@@ -158,3 +178,65 @@ def sync_services_task():
             logger.error(f'Service sync failed for {provider.name}: {e}')
 
     return results
+ 
+ 
+@shared_task(name='core.tasks.check_provider_balances_task')
+def check_provider_balances_task():
+    """
+    Periodic task to check active SMM provider balances.
+    Creates an AdminNotification if any provider balance drops below SiteSettings.provider_balance_alert_threshold.
+    """
+    from decimal import Decimal, InvalidOperation
+    from datetime import timedelta
+    from django.utils import timezone
+    from core.models import Provider, SiteSettings, AdminNotification
+    from core.services.smm_provider import get_provider_client
+
+    settings = SiteSettings.load()
+    threshold = getattr(settings, 'provider_balance_alert_threshold', Decimal('15.00')) or Decimal('15.00')
+
+    alerts_created = 0
+    active_providers = Provider.objects.filter(is_active=True)
+
+    for provider in active_providers:
+        try:
+            client = get_provider_client(provider)
+            bal_data = client.get_balance()
+
+            if 'balance' in bal_data:
+                try:
+                    balance_val = Decimal(str(bal_data['balance']))
+                    currency = str(bal_data.get('currency', 'USD'))
+
+                    if balance_val < threshold:
+                        # Deduplicate: only create alert if no unread alert exists for this provider in the last 4 hours
+                        recent_unread = AdminNotification.objects.filter(
+                            notification_type=AdminNotification.NotificationType.LOW_PROVIDER_BALANCE,
+                            is_read=False,
+                            data__provider_id=provider.id,
+                            created_at__gte=timezone.now() - timedelta(hours=4)
+                        ).exists()
+
+                        if not recent_unread:
+                            severity = AdminNotification.Severity.CRITICAL if balance_val < Decimal('5.00') else AdminNotification.Severity.WARNING
+                            AdminNotification.objects.create(
+                                notification_type=AdminNotification.NotificationType.LOW_PROVIDER_BALANCE,
+                                severity=severity,
+                                title=f"Low Balance Alert: {provider.name}",
+                                message=f"{provider.name} balance is critically low at {currency} {balance_val:,.2f} (alert threshold: ${threshold:,.2f}). Orders from connected resellers and users will fail if depleted.",
+                                data={
+                                    'provider_id': provider.id,
+                                    'provider_name': provider.name,
+                                    'balance': str(balance_val),
+                                    'currency': currency,
+                                    'threshold': str(threshold)
+                                }
+                            )
+                            alerts_created += 1
+                except (ValueError, TypeError, InvalidOperation) as parse_err:
+                    logger.warning(f"Could not parse balance for {provider.name}: {parse_err}")
+        except Exception as e:
+            logger.warning(f"Failed to check balance for {provider.name}: {e}")
+
+    return {'checked': active_providers.count(), 'alerts_created': alerts_created}
+

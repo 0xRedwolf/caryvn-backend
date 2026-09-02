@@ -604,6 +604,10 @@ class SiteSettings(models.Model):
         default=True,
         help_text='Allow users to deposit using the Squad (card/online) payment gateway'
     )
+    nexapay_enabled = models.BooleanField(
+        default=True,
+        help_text='Allow users to deposit using the NexaPay (virtual bank account) payment gateway'
+    )
     manual_bank_enabled = models.BooleanField(
         default=True,
         help_text='Allow users to deposit via manual bank transfer'
@@ -615,6 +619,12 @@ class SiteSettings(models.Model):
 
     # Financial Settings
     min_topup_amount = models.DecimalField(max_digits=10, decimal_places=2, default=Decimal('500.00'), help_text='Minimum allowed top-up amount')
+    provider_balance_alert_threshold = models.DecimalField(
+        max_digits=10,
+        decimal_places=2,
+        default=Decimal('15.00'),
+        help_text='Alert admin when any active provider balance drops below this amount (USD)'
+    )
 
     class Meta:
         verbose_name = 'Site Settings'
@@ -632,6 +642,38 @@ class SiteSettings(models.Model):
     def save(self, *args, **kwargs):
         self.pk = 1  # Enforce singleton
         super().save(*args, **kwargs)
+
+
+class AdminNotification(models.Model):
+    """System, provider balance, and critical order alerts for administrators."""
+
+    class NotificationType(models.TextChoices):
+        LOW_PROVIDER_BALANCE = 'low_provider_balance', 'Low Provider Balance'
+        ORDER_FAILED = 'order_failed', 'Order Failed'
+        SYSTEM = 'system', 'System Alert'
+
+    class Severity(models.TextChoices):
+        INFO = 'info', 'Info'
+        WARNING = 'warning', 'Warning'
+        CRITICAL = 'critical', 'Critical'
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, null=True, blank=True, related_name='admin_notifications')
+    notification_type = models.CharField(max_length=50, choices=NotificationType.choices, default=NotificationType.SYSTEM)
+    severity = models.CharField(max_length=20, choices=Severity.choices, default=Severity.INFO)
+    title = models.CharField(max_length=255)
+    message = models.TextField()
+    data = models.JSONField(default=dict, blank=True)
+    is_read = models.BooleanField(default=False, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Admin Notification'
+        verbose_name_plural = 'Admin Notifications'
+
+    def __str__(self):
+        return f"[{self.severity.upper()}] {self.title}"
 
 
 # Signal to create wallet when user is created

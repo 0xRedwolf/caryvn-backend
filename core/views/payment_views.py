@@ -547,3 +547,269 @@ class SquadWebhookView(APIView):
                 logger.warning(f'Squad webhook: transaction not found for ref={transaction_ref}')
 
         return Response({'status': 'ok'})
+
+
+class InitiateNexaPayTopupView(APIView):
+    """Initiate a wallet top-up by creating a dynamic NexaPay virtual bank account."""
+
+    def post(self, request):
+        from core.models import SiteSettings
+        from core.services.nexapay import nexapay_service, NexaPayPaymentError
+
+        settings = SiteSettings.load()
+        if not settings.nexapay_enabled:
+            return Response(
+                {'error': 'NexaPay payment method is currently disabled.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        amount = request.data.get('amount')
+        if not amount:
+            return Response(
+                {'error': 'Amount is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            amount = Decimal(str(amount))
+        except Exception:
+            return Response(
+                {'error': 'Invalid amount'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        min_amount = settings.min_topup_amount
+        if amount < min_amount:
+            return Response(
+                {'error': f'Minimum top-up amount is ₦{min_amount:,.0f}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        if amount > MAX_TOPUP_AMOUNT:
+            return Response(
+                {'error': f'Maximum top-up amount is ₦{MAX_TOPUP_AMOUNT:,.0f}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Generate unique reference
+        reference = nexapay_service.generate_reference()
+        wallet = request.user.wallet
+
+        try:
+            transaction = wallet.create_pending_deposit(
+                amount=amount,
+                payment_reference=reference,
+                payment_gateway='nexapay',
+                description=f'Wallet top-up via NexaPay (₦{amount:,.2f})',
+            )
+        except Exception as e:
+            logger.error(f'Failed to create pending NexaPay transaction: {e}')
+            return Response(
+                {'error': 'Failed to create transaction'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        # Call NexaPay API to generate virtual bank account
+        try:
+            result = nexapay_service.create_virtual_account(
+                amount_naira=amount,
+                transaction_ref=reference,
+                customer_id=str(request.user.id),
+                customer_name=request.user.get_full_name() or request.user.username,
+                customer_email=request.user.email,
+                validity_time_minutes=30,
+            )
+
+            return Response({
+                'status': 'success',
+                'reference': reference,
+                'amount': str(amount),
+                'bank_name': result['bank_name'],
+                'account_number': result['account_number'],
+                'account_name': result['account_name'],
+                'expires_at': result['expires_at'],
+                'validity_minutes': 30,
+            })
+
+        except NexaPayPaymentError as e:
+            wallet.fail_deposit(transaction)
+            logger.error(f'NexaPay virtual account creation failed: {e}')
+            return Response(
+                {'error': str(e)},
+                status=status.HTTP_502_BAD_GATEWAY
+            )
+
+
+class VerifyNexaPayTopupView(APIView):
+    """
+    Check the status of a NexaPay virtual account topup.
+    Polled by user frontend to detect deposit completion.
+    """
+
+    def get(self, request):
+        reference = request.query_params.get('reference', '').strip()
+        if not reference:
+            return Response(
+                {'error': 'Reference is required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            transaction = Transaction.objects.get(
+                payment_reference=reference,
+                wallet__user=request.user,
+            )
+        except Transaction.DoesNotExist:
+            return Response(
+                {'error': 'Transaction not found'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        wallet = request.user.wallet
+
+        # If already success, return immediately
+        if transaction.status == Transaction.Status.SUCCESS:
+            return Response({
+                'status': 'success',
+                'message': 'Payment confirmed',
+                'balance': str(wallet.balance),
+                'amount': str(transaction.amount),
+            })
+
+        if transaction.status == Transaction.Status.FAILED:
+            return Response({
+                'status': 'failed',
+                'message': 'Payment session failed or expired',
+            })
+
+        # Still pending: optionally requery NexaPay to catch any missed/delayed webhook
+        try:
+            from core.services.nexapay import nexapay_service, NexaPayPaymentError
+            requery = nexapay_service.requery_virtual_account(reference)
+            # If NexaPay recorded payment or completed
+            if requery.get('found') and str(requery.get('status', '')).upper() in ('PAID', 'SUCCESS', 'COMPLETED'):
+                new_balance = wallet.confirm_deposit(transaction)
+                try:
+                    from core.services.email_service import email_service
+                    email_service.send_topup_success(
+                        request.user, transaction.amount, new_balance
+                    )
+                except Exception as e:
+                    logger.warning(f'Email notification failed: {e}')
+
+                return Response({
+                    'status': 'success',
+                    'message': 'Payment confirmed via requery',
+                    'balance': str(new_balance),
+                    'amount': str(transaction.amount),
+                })
+        except Exception as e:
+            logger.debug(f'NexaPay poll requery: {e}')
+
+        return Response({
+            'status': 'pending',
+            'message': 'Waiting for bank transfer deposit...',
+            'reference': reference,
+            'amount': str(transaction.amount),
+        })
+
+
+@method_decorator(csrf_exempt, name='dispatch')
+class NexaPayWebhookView(APIView):
+    """Handle signed NexaPay inbound webhooks (deposit.received)."""
+    permission_classes = [permissions.AllowAny]
+    authentication_classes = []
+
+    def post(self, request):
+        from django.conf import settings as django_settings
+        from core.services.nexapay import nexapay_service
+
+        raw_body = request.body
+        signature = request.META.get('HTTP_X_NEXAPAY_SIGNATURE', '')
+        timestamp = request.META.get('HTTP_X_NEXAPAY_TIMESTAMP', '')
+        event_header = request.META.get('HTTP_X_NEXAPAY_EVENT', '')
+        event_id = request.META.get('HTTP_X_NEXAPAY_EVENT_ID', '')
+        secret_key = django_settings.NEXAPAY_WEBHOOK_SECRET
+
+        logger.info(f'NexaPay webhook received: event={event_header}, event_id={event_id}, timestamp={timestamp}')
+
+        if not secret_key:
+            logger.error('NexaPay webhook received but NEXAPAY_WEBHOOK_SECRET is not configured')
+            return Response({'error': 'Webhook not configured'}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+        # Validate signature (allow 'test' signature in local development / DEBUG mode)
+        if django_settings.DEBUG and signature == 'test':
+            is_valid = True
+        else:
+            is_valid = nexapay_service.validate_webhook_signature(
+                raw_body, signature, timestamp, secret_key
+            )
+        if not is_valid:
+            logger.warning(f'Invalid NexaPay webhook signature: sig={signature}')
+            return Response({'error': 'Invalid signature'}, status=status.HTTP_401_UNAUTHORIZED)
+
+        try:
+            payload = json.loads(raw_body)
+        except json.JSONDecodeError:
+            return Response({'error': 'Invalid JSON'}, status=status.HTTP_400_BAD_REQUEST)
+
+        event = payload.get('event') or event_header
+        data = payload.get('data') or payload
+
+        if event == 'deposit.received':
+            merchant_ref = (
+                data.get('merchantReference') or
+                data.get('merchant_reference') or
+                data.get('reference') or ''
+            )
+            raw_amount = data.get('amount')
+
+            if not merchant_ref:
+                logger.warning('NexaPay webhook deposit.received missing merchantReference')
+                return Response({'status': 'ok'})
+
+            try:
+                transaction = Transaction.objects.select_related(
+                    'wallet', 'wallet__user'
+                ).get(payment_reference=merchant_ref)
+
+                if transaction.status == Transaction.Status.PENDING:
+                    # Amount sanity check if amount supplied in webhook
+                    if raw_amount:
+                        try:
+                            paid_val = Decimal(str(raw_amount))
+                            # Handle kobo vs naira if applicable
+                            if paid_val == transaction.amount * 100:
+                                paid_val = paid_val / 100
+                            # If amount mismatch exceeds 1 naira, warn but credit user's validated pending
+                            if abs(paid_val - transaction.amount) > Decimal('1'):
+                                logger.warning(
+                                    f'NexaPay amount mismatch for {merchant_ref}: '
+                                    f'paid={paid_val}, expected={transaction.amount}'
+                                )
+                        except Exception as e:
+                            logger.warning(f'Could not parse webhook amount: {e}')
+
+                    # Credit wallet idempotently
+                    wallet = transaction.wallet
+                    new_balance = wallet.confirm_deposit(transaction)
+
+                    try:
+                        from core.services.email_service import email_service
+                        email_service.send_topup_success(
+                            wallet.user, transaction.amount, new_balance
+                        )
+                    except Exception as e:
+                        logger.error(f'Failed to send top-up email from NexaPay webhook: {e}')
+
+                    logger.info(
+                        f'NexaPay webhook credited wallet for ref={merchant_ref}: '
+                        f'amount={transaction.amount}, new_balance={new_balance}'
+                    )
+
+            except Transaction.DoesNotExist:
+                logger.warning(f'NexaPay webhook: transaction not found for ref={merchant_ref}')
+
+        # Always return 200 OK to acknowledge receipt and prevent retries
+        return Response({'status': 'ok'})
+
