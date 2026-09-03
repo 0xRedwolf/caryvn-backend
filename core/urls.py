@@ -38,6 +38,12 @@ from .views.payment_views import (
     InitiateManualTopupView, InitiateCryptoTopupView,
     InitiateNexaPayTopupView, VerifyNexaPayTopupView, NexaPayWebhookView
 )
+from .views.blog_views import (
+    PublicBlogListView, PublicBlogDetailView, PublicBlogCategoriesView, PublicBlogAuthorsView,
+    AdminBlogPostListCreateView, AdminBlogPostDetailView, AdminBlogImageUploadView,
+    AdminBlogAuthorListCreateView, AdminBlogAuthorDetailView,
+    AdminBlogCategoryListCreateView, AdminBlogCategoryDetailView
+)
 from .views.analytics_views import AdminAnalyticsView
 from .views.activity_views import LogActivityView, AdminUserActivityView
 from .views.auth_views import PasswordResetRequestView, PasswordResetConfirmView
@@ -144,6 +150,21 @@ urlpatterns = [
     path('admin/notifications/', AdminNotificationListView.as_view(), name='admin-notifications'),
     path('admin/notifications/test/', AdminNotificationTestView.as_view(), name='admin-notifications-test'),
     
+    # Public Blog Endpoints
+    path('blog/', PublicBlogListView.as_view(), name='public-blog-list'),
+    path('blog/categories/', PublicBlogCategoriesView.as_view(), name='public-blog-categories'),
+    path('blog/authors/', PublicBlogAuthorsView.as_view(), name='public-blog-authors'),
+    path('blog/<slug:slug>/', PublicBlogDetailView.as_view(), name='public-blog-detail'),
+
+    # Admin Blog CMS Endpoints
+    path('admin/blog/posts/', AdminBlogPostListCreateView.as_view(), name='admin-blog-posts'),
+    path('admin/blog/posts/<uuid:pk>/', AdminBlogPostDetailView.as_view(), name='admin-blog-post-detail'),
+    path('admin/blog/upload-image/', AdminBlogImageUploadView.as_view(), name='admin-blog-upload-image'),
+    path('admin/blog/authors/', AdminBlogAuthorListCreateView.as_view(), name='admin-blog-authors'),
+    path('admin/blog/authors/<uuid:pk>/', AdminBlogAuthorDetailView.as_view(), name='admin-blog-author-detail'),
+    path('admin/blog/categories/', AdminBlogCategoryListCreateView.as_view(), name='admin-blog-categories'),
+    path('admin/blog/categories/<uuid:pk>/', AdminBlogCategoryDetailView.as_view(), name='admin-blog-category-detail'),
+
     # Activity tracking
     path('activity/', LogActivityView.as_view(), name='log-activity'),
 ]

@@ -6,7 +6,8 @@ from django.contrib.auth import get_user_model
 from django.contrib.auth.password_validation import validate_password
 from .models import (
     Wallet, Transaction, ServiceCategory, Service,
-    Order, Ticket, TicketReply, MarkupRule, APILog, PopupCard
+    Order, Ticket, TicketReply, MarkupRule, APILog, PopupCard,
+    BlogAuthor, BlogCategory, BlogPost
 )
 
 User = get_user_model()
@@ -305,4 +306,62 @@ class PopupCardSerializer(serializers.ModelSerializer):
     class Meta:
         model = PopupCard
         fields = ('id', 'title', 'description', 'image', 'action_url', 'action_text', 'order', 'is_active')
+
+
+# === Blog Serializers ===
+
+class BlogAuthorSerializer(serializers.ModelSerializer):
+    posts_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BlogAuthor
+        fields = ('id', 'name', 'role', 'avatar_url', 'bio', 'social_x', 'social_linkedin', 'posts_count', 'created_at')
+
+    def get_posts_count(self, obj):
+        return obj.posts.filter(status='PUBLISHED').count()
+
+
+class BlogCategorySerializer(serializers.ModelSerializer):
+    posts_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = BlogCategory
+        fields = ('id', 'name', 'slug', 'description', 'posts_count', 'created_at')
+
+    def get_posts_count(self, obj):
+        return obj.posts.filter(status='PUBLISHED').count()
+
+
+class BlogPostListSerializer(serializers.ModelSerializer):
+    author_name = serializers.CharField(source='author.name', read_only=True, default='Admin')
+    author_avatar = serializers.CharField(source='author.avatar_url', read_only=True, default='')
+    category_name = serializers.CharField(source='category.name', read_only=True, default='General')
+    category_slug = serializers.CharField(source='category.slug', read_only=True, default='general')
+
+    class Meta:
+        model = BlogPost
+        fields = (
+            'id', 'title', 'slug', 'excerpt', 'featured_image',
+            'author_name', 'author_avatar', 'category_name', 'category_slug',
+            'status', 'featured', 'read_time', 'views_count',
+            'published_at', 'created_at'
+        )
+
+
+class BlogPostDetailSerializer(serializers.ModelSerializer):
+    author = BlogAuthorSerializer(read_only=True)
+    category = BlogCategorySerializer(read_only=True)
+    author_id = serializers.UUIDField(write_only=True, required=False, allow_null=True)
+    category_id = serializers.UUIDField(write_only=True, required=False, allow_null=True)
+
+    class Meta:
+        model = BlogPost
+        fields = (
+            'id', 'title', 'slug', 'excerpt', 'content', 'featured_image',
+            'author', 'category', 'author_id', 'category_id',
+            'status', 'featured', 'read_time', 'views_count',
+            'published_at', 'created_at', 'updated_at',
+            'seo_title', 'seo_description', 'canonical_url', 'focus_keyword',
+            'faqs', 'cta_title', 'cta_description', 'cta_button_text', 'cta_url'
+        )
 

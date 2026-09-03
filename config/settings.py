@@ -250,6 +250,11 @@ EMAIL_TIMEOUT = 10
 # Resend HTTP API key — used by email_service.py instead of Django SMTP (Railway blocks SMTP)
 RESEND_API_KEY = env('RESEND_API_KEY', default='')
 
+# Cloudinary Configuration for Headless CMS Media Hosting
+CLOUDINARY_CLOUD_NAME = env('CLOUDINARY_CLOUD_NAME', default='')
+CLOUDINARY_API_KEY = env('CLOUDINARY_API_KEY', default='')
+CLOUDINARY_API_SECRET = env('CLOUDINARY_API_SECRET', default='')
+
 # Production security settings
 if not DEBUG:
     SECURE_SSL_REDIRECT = True

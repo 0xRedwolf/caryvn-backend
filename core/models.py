@@ -744,3 +744,92 @@ def auto_delete_popup_image_on_change(sender, instance, **kwargs):
     if not old_file == new_file:
         if old_file and os.path.isfile(old_file.path):
             os.remove(old_file.path)
+
+
+# =============================================================================
+# Headless CMS Blog Models
+# =============================================================================
+
+class BlogAuthor(models.Model):
+    """Author profile for Caryvn blog articles (essential for Google E-E-A-T)."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=150)
+    role = models.CharField(max_length=150, default='Editor In Chief')
+    avatar_url = models.URLField(max_length=500, blank=True, null=True)
+    bio = models.TextField(blank=True)
+    social_x = models.URLField(max_length=300, blank=True, null=True)
+    social_linkedin = models.URLField(max_length=300, blank=True, null=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['name']
+        verbose_name = 'Blog Author'
+        verbose_name_plural = 'Blog Authors'
+
+    def __str__(self):
+        return f"{self.name} ({self.role})"
+
+
+class BlogCategory(models.Model):
+    """Category taxonomy for Caryvn blog articles."""
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    name = models.CharField(max_length=100, unique=True)
+    slug = models.SlugField(max_length=120, unique=True)
+    description = models.TextField(blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['name']
+        verbose_name = 'Blog Category'
+        verbose_name_plural = 'Blog Categories'
+
+    def __str__(self):
+        return self.name
+
+
+class BlogPost(models.Model):
+    """Full-featured dynamic blog post model with custom SEO & CTA controls."""
+
+    class Status(models.TextChoices):
+        DRAFT = 'DRAFT', 'Draft'
+        PUBLISHED = 'PUBLISHED', 'Published'
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    title = models.CharField(max_length=300)
+    slug = models.SlugField(max_length=350, unique=True, db_index=True)
+    excerpt = models.TextField(blank=True, help_text="Short summary for search snippets and cards")
+    content = models.TextField(help_text="Full HTML/Markdown formatted content")
+    featured_image = models.URLField(max_length=500, blank=True, null=True, help_text="Cloudinary CDN or asset URL")
+    
+    author = models.ForeignKey(BlogAuthor, on_delete=models.SET_NULL, null=True, blank=True, related_name='posts')
+    category = models.ForeignKey(BlogCategory, on_delete=models.SET_NULL, null=True, blank=True, related_name='posts')
+    
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PUBLISHED, db_index=True)
+    featured = models.BooleanField(default=False, help_text="Feature on blog hero / homepage")
+    read_time = models.CharField(max_length=50, default='5 min read')
+    views_count = models.PositiveIntegerField(default=0)
+    
+    published_at = models.DateTimeField(default=timezone.now, db_index=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    # SEO & Schema.org Rich Snippet Metadata
+    seo_title = models.CharField(max_length=300, blank=True, help_text="Custom <title> tag override")
+    seo_description = models.TextField(blank=True, help_text="Custom <meta description> tag override")
+    canonical_url = models.URLField(max_length=500, blank=True, null=True, help_text="Custom canonical link")
+    focus_keyword = models.CharField(max_length=150, blank=True)
+    faqs = models.JSONField(default=list, blank=True, help_text="List of {q: '...', a: '...'} for Schema.org FAQPage")
+
+    # Custom Target Conversion CTA
+    cta_title = models.CharField(max_length=255, default="Boost Your Social Media Accounts Now!", blank=True)
+    cta_description = models.TextField(default="It's fun and easy. Just choose the amount of followers, likes, or views that suits your needs, and blast off to insane account growth.", blank=True)
+    cta_button_text = models.CharField(max_length=100, default="Get Boosting Now!", blank=True)
+    cta_url = models.CharField(max_length=300, default="/register", blank=True)
+
+    class Meta:
+        ordering = ['-published_at', '-created_at']
+        verbose_name = 'Blog Post'
+        verbose_name_plural = 'Blog Posts'
+
+    def __str__(self):
+        return f"{self.title} ({self.status})"
