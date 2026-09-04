@@ -305,7 +305,12 @@ class AdminUserSerializer(serializers.ModelSerializer):
 class PopupCardSerializer(serializers.ModelSerializer):
     class Meta:
         model = PopupCard
-        fields = ('id', 'title', 'description', 'image', 'action_url', 'action_text', 'order', 'is_active')
+        fields = (
+            'id', 'title', 'description', 'image', 'action_url', 
+            'action_text', 'placement_type', 'impressions_count', 
+            'clicks_count', 'order', 'is_active', 'created_at'
+        )
+        read_only_fields = ('id', 'impressions_count', 'clicks_count', 'created_at')
 
 
 # === Blog Serializers ===

@@ -701,11 +701,18 @@ def assign_reseller_order_id(sender, instance, created, **kwargs):
 class PopupCard(models.Model):
     """Announcement or Ad cards displayed on the user dashboard."""
     
+    class Placement(models.TextChoices):
+        POPUP = 'POPUP', 'Popup Modal'
+        BANNER = 'BANNER', 'Dashboard In-Feed Banner'
+
     title = models.CharField(max_length=200, blank=True, null=True)
     description = models.TextField(blank=True, help_text="Optional text content for the card")
-    image = models.ImageField(upload_to='popups/', blank=True, null=True, help_text="Square image works best (1:1 ratio)")
+    image = models.CharField(max_length=500, blank=True, null=True, help_text="Image URL or Cloudinary CDN link")
     action_url = models.URLField(blank=True, max_length=500, help_text="Optional link when card is clicked")
     action_text = models.CharField(max_length=50, blank=True, default="Learn More", help_text="Text to display on the action button (e.g., 'Learn More', 'Buy Now')")
+    placement_type = models.CharField(max_length=20, choices=Placement.choices, default=Placement.POPUP, help_text="Where this ad is displayed")
+    impressions_count = models.PositiveIntegerField(default=0, help_text="Total views/impressions")
+    clicks_count = models.PositiveIntegerField(default=0, help_text="Total clicks on action button")
     
     is_active = models.BooleanField(default=True)
     order = models.IntegerField(default=0, help_text="Lower numbers appear first")
@@ -717,21 +724,24 @@ class PopupCard(models.Model):
         verbose_name_plural = 'Popup Cards'
     
     def __str__(self):
-        return f"{self.title} ({'Active' if self.is_active else 'Inactive'})"
+        return f"{self.title or 'Untitled Ad'} ({self.placement_type}) - {'Active' if self.is_active else 'Inactive'}"
 
-# Signal to auto-delete image files when a PopupCard is deleted or changed
+# Signal to auto-delete legacy image files when a PopupCard is deleted or changed
 import os
 
 @receiver(post_delete, sender=PopupCard)
 def auto_delete_popup_image_on_delete(sender, instance, **kwargs):
-    """Deletes file from filesystem when corresponding PopupCard object is deleted."""
+    """Deletes local file from filesystem when corresponding PopupCard object is deleted if applicable."""
     if instance.image:
-        if os.path.isfile(instance.image.path):
-            os.remove(instance.image.path)
+        try:
+            if hasattr(instance.image, 'path') and os.path.isfile(instance.image.path):
+                os.remove(instance.image.path)
+        except Exception:
+            pass
 
 @receiver(pre_save, sender=PopupCard)
 def auto_delete_popup_image_on_change(sender, instance, **kwargs):
-    """Deletes old file from filesystem when corresponding PopupCard object is updated with a new file."""
+    """Deletes old local file from filesystem when corresponding PopupCard object is updated if applicable."""
     if not instance.pk:
         return False
 
@@ -741,9 +751,12 @@ def auto_delete_popup_image_on_change(sender, instance, **kwargs):
         return False
 
     new_file = instance.image
-    if not old_file == new_file:
-        if old_file and os.path.isfile(old_file.path):
-            os.remove(old_file.path)
+    if old_file and old_file != new_file:
+        try:
+            if hasattr(old_file, 'path') and os.path.isfile(old_file.path):
+                os.remove(old_file.path)
+        except Exception:
+            pass
 
 
 # =============================================================================
