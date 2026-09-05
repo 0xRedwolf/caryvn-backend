@@ -1,141 +1,99 @@
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Order Confirmed</title>
-    <style>
-      body {
-        font-family:
-          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        background: #0f172a;
-        margin: 0;
-        padding: 20px;
-      }
-      .container {
-        max-width: 520px;
-        margin: 0 auto;
-        background: #1e293b;
-        border-radius: 16px;
-        overflow: hidden;
-      }
-      .header {
-        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%);
-        padding: 32px;
-        text-align: center;
-      }
-      .header h1 {
-        color: #fff;
-        font-size: 22px;
-        margin: 0 0 4px;
-      }
-      .header p {
-        color: rgba(255, 255, 255, 0.8);
-        font-size: 14px;
-        margin: 0;
-      }
-      .body {
-        padding: 32px;
-      }
-      .greeting {
-        color: #e2e8f0;
-        font-size: 16px;
-        margin: 0 0 16px;
-      }
-      .detail-card {
-        background: #0f172a;
-        border-radius: 12px;
-        padding: 20px;
-        margin: 16px 0;
-      }
-      .detail-row {
-        display: flex;
-        justify-content: space-between;
-        padding: 8px 0;
-        border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-      }
-      .detail-row:last-child {
-        border-bottom: none;
-      }
-      .detail-label {
-        color: #94a3b8;
-        font-size: 13px;
-      }
-      .detail-value {
-        color: #e2e8f0;
-        font-size: 13px;
-        font-weight: 600;
-      }
-      .total-row .detail-value {
-        color: #2563eb;
-        font-size: 16px;
-      }
-      .footer {
-        padding: 24px 32px;
-        text-align: center;
-        border-top: 1px solid rgba(255, 255, 255, 0.05);
-      }
-      .footer p {
-        color: #64748b;
-        font-size: 12px;
-        margin: 0;
-      }
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <div class="header">
-        <img
-          src="{{ logo_url }}"
-          alt="{{ brand_name }}"
-          height="40"
-          style="margin-bottom: 20px"
-        />
-        <h1>Order Confirmed ✓</h1>
-        <p>{{ brand_name }}</p>
-      </div>
-      <div class="body">
-        <p class="greeting">Hi {{ user.first_name|default:user.email }},</p>
-        <p style="color: #94a3b8; font-size: 14px">
-          Your order has been placed successfully and is being processed.
-        </p>
+{% extends "emails/base_luxury_email.html" %}
 
-        <div class="detail-card">
-          <div class="detail-row">
-            <span class="detail-label">Order ID</span>
-            <span class="detail-value">{{ order.id|truncatechars:12 }}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Service</span>
-            <span class="detail-value"
-              >{{ order.service.name|truncatechars:35 }}</span
-            >
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Quantity</span>
-            <span class="detail-value">{{ order.quantity|floatformat:0 }}</span>
-          </div>
-          <div class="detail-row">
-            <span class="detail-label">Link</span>
-            <span class="detail-value" style="word-break: break-all"
-              >{{ order.link|truncatechars:40 }}</span
-            >
-          </div>
-          <div class="detail-row total-row">
-            <span class="detail-label" style="font-size: 14px"
-              >Total Charged</span
-            >
-            <span class="detail-value">₦{{ order.charge|floatformat:2 }}</span>
-          </div>
-        </div>
+{% block title %}Order Confirmed #{{ order.id|truncatechars:10 }} — {{ brand_name }}{% endblock %}
 
-        <p style="color: #94a3b8; font-size: 13px">
-          You can track your order status from your dashboard.
-        </p>
-      </div>
-      <div class="footer">
-        <p>&copy; {{ brand_name }}. All rights reserved.</p>
-      </div>
-    </div>
-  </body>
-</html>
+{% block content %}
+<!-- STATUS BADGE -->
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 24px;">
+  <tr>
+    <td align="center">
+      <span class="badge-pill" style="display: inline-block; background-color: #eff6ff; border: 1px solid #bfdbfe; color: #1d4ed8; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 6px 16px; border-radius: 9999px;">
+        ✓ Order Confirmed
+      </span>
+    </td>
+  </tr>
+</table>
+
+<!-- MAIN HEADLINE -->
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 12px;">
+  <tr>
+    <td align="center">
+      <h1 class="text-heading" style="margin: 0; font-size: 24px; font-weight: 800; color: #0f172a; letter-spacing: -0.025em; line-height: 1.3;">
+        We've received your order
+      </h1>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" style="padding-top: 8px;">
+      <p class="text-muted" style="margin: 0; font-size: 14px; line-height: 1.6; color: #64748b;">
+        Hi <strong>{{ user.first_name|default:user.email }}</strong>, your order has been received and is being processed.
+      </p>
+    </td>
+  </tr>
+</table>
+
+<!-- RECEIPT SUMMARY CARD -->
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" class="detail-card" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 16px; margin: 28px 0; overflow: hidden;">
+  
+  <!-- Row: Order ID -->
+  <tr class="detail-card-row" style="border-bottom: 1px solid #edf2f7;">
+    <td style="padding: 14px 20px; font-size: 13px; color: #64748b; font-weight: 500;" class="text-muted">Order ID</td>
+    <td align="right" style="padding: 14px 20px; font-size: 13px; font-weight: 700; color: #0f172a; font-family: monospace;" class="text-heading">#{{ order.id|truncatechars:12 }}</td>
+  </tr>
+
+  <!-- Row: Service -->
+  <tr class="detail-card-row" style="border-bottom: 1px solid #edf2f7;">
+    <td style="padding: 14px 20px; font-size: 13px; color: #64748b; font-weight: 500;" class="text-muted">Service</td>
+    <td align="right" style="padding: 14px 20px; font-size: 13px; font-weight: 600; color: #0f172a;" class="text-heading">{{ order.service.name|truncatechars:45 }}</td>
+  </tr>
+
+  <!-- Row: Quantity -->
+  <tr class="detail-card-row" style="border-bottom: 1px solid #edf2f7;">
+    <td style="padding: 14px 20px; font-size: 13px; color: #64748b; font-weight: 500;" class="text-muted">Quantity</td>
+    <td align="right" style="padding: 14px 20px; font-size: 13px; font-weight: 700; color: #0f172a;" class="text-heading">{{ order.quantity|floatformat:0 }}</td>
+  </tr>
+
+  <!-- Row: Target Link -->
+  <tr class="detail-card-row" style="border-bottom: 1px solid #edf2f7;">
+    <td style="padding: 14px 20px; font-size: 13px; color: #64748b; font-weight: 500;" class="text-muted">Target Link</td>
+    <td align="right" style="padding: 14px 20px; font-size: 12px; font-weight: 500; color: #2563eb; word-break: break-all; max-width: 250px;">{{ order.link|truncatechars:45 }}</td>
+  </tr>
+
+  <!-- Row: Total Charged -->
+  <tr style="background-color: #eff6ff;" class="card-header-subtle">
+    <td style="padding: 16px 20px; font-size: 14px; color: #1e3a8a; font-weight: 600;">Total Charged</td>
+    <td align="right" style="padding: 16px 20px; font-size: 17px; font-weight: 800; color: #1d4ed8;">₦{{ order.charge|floatformat:2 }}</td>
+  </tr>
+
+</table>
+
+<!-- CTA BUTTON -->
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin: 32px 0 20px;">
+  <tr>
+    <td align="center">
+      <!--[if mso]>
+      <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="{{ orders_url }}" style="height:48px;v-text-anchor:middle;width:220px;" arcsize="25%" stroke="f" fillcolor="#2563eb">
+        <w:anchorlock/>
+        <center style="color:#ffffff;font-family:sans-serif;font-size:14px;font-weight:bold;">Track Order Status &rarr;</center>
+      </v:roundrect>
+      <![endif]-->
+      <!--[if !mso]><!-->
+      <a href="{{ orders_url }}" target="_blank" style="background-color: #2563eb; border-radius: 12px; color: #ffffff; display: inline-block; font-size: 14px; font-weight: 700; line-height: 48px; text-align: center; text-decoration: none; width: 220px; -webkit-text-size-adjust: none; box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);">
+        Track Order Status &rarr;
+      </a>
+      <!--<![endif]-->
+    </td>
+  </tr>
+</table>
+
+<!-- GUARANTEE NOTE -->
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
+  <tr>
+    <td align="center" style="padding-top: 10px;">
+      <p class="text-muted" style="margin: 0; font-size: 12px; line-height: 1.6; color: #94a3b8;">
+        Delivery typically begins within a few minutes to hours depending on server load. Live progress can be tracked anytime on your dashboard.
+      </p>
+    </td>
+  </tr>
+</table>
+{% endblock %}

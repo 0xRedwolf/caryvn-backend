@@ -48,6 +48,8 @@ from .views.blog_views import (
 from .views.analytics_views import AdminAnalyticsView
 from .views.activity_views import LogActivityView, AdminUserActivityView
 from .views.auth_views import PasswordResetRequestView, PasswordResetConfirmView
+from .views.session_views import UserSessionListView, UserSessionDetailView
+from .views.admin_audit_views import AdminAuditLogListView
 
 urlpatterns = [
     # Auth endpoints
@@ -59,6 +61,9 @@ urlpatterns = [
     path('auth/api-key/', GenerateAPIKeyView.as_view(), name='generate-api-key'),
     path('auth/password-reset/', PasswordResetRequestView.as_view(), name='password-reset-request'),
     path('auth/password-reset/confirm/', PasswordResetConfirmView.as_view(), name='password-reset-confirm'),
+    path('auth/sessions/', UserSessionListView.as_view(), name='auth-sessions'),
+    path('auth/sessions/<uuid:session_id>/', UserSessionDetailView.as_view(), name='auth-session-detail'),
+    path('admin/audit-logs/', AdminAuditLogListView.as_view(), name='admin-audit-logs'),
     
     # Wallet endpoints
     path('wallet/', WalletView.as_view(), name='wallet'),

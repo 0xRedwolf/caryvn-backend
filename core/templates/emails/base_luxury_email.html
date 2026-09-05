@@ -1,0 +1,141 @@
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN" "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" lang="en" xmlns:v="urn:schemas-microsoft-com:vml" xmlns:o="urn:schemas-microsoft-com:office:office">
+<head>
+  <meta http-equiv="Content-Type" content="text/html; charset=utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <meta name="color-scheme" content="light dark" />
+  <meta name="supported-color-schemes" content="light dark" />
+  <title>{% block title %}{{ brand_name }}{% endblock %}</title>
+  <!--[if mso]>
+  <noscript>
+    <xml>
+      <o:OfficeDocumentSettings>
+        <o:PixelsPerInch>96</o:PixelsPerInch>
+      </o:OfficeDocumentSettings>
+    </xml>
+  </noscript>
+  <![endif]-->
+  <style type="text/css">
+    /* Base resets */
+    body, table, td, a { -webkit-text-size-adjust: 100%; -ms-text-size-adjust: 100%; }
+    table, td { mso-table-lspace: 0pt; mso-table-rspace: 0pt; }
+    img { -ms-interpolation-mode: bicubic; border: 0; height: auto; line-height: 100%; outline: none; text-decoration: none; }
+    table { border-collapse: collapse !important; }
+    body { height: 100% !important; margin: 0 !important; padding: 0 !important; width: 100% !important; background-color: #f8fafc; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif; -webkit-font-smoothing: antialiased; }
+    
+    /* Responsive styling */
+    @media only screen and (max-width: 620px) {
+      .email-container { width: 100% !important; max-width: 100% !important; border-radius: 0 !important; }
+      .mobile-padding { padding-left: 20px !important; padding-right: 20px !important; }
+      .mobile-stack { display: block !important; width: 100% !important; text-align: left !important; }
+      .mobile-align-center { text-align: center !important; }
+      .mobile-hide { display: none !important; }
+    }
+
+    /* Dark mode client overrides */
+    @media (prefers-color-scheme: dark) {
+      body, .email-bg { background-color: #0b0f17 !important; }
+      .card-box { background-color: #131c2e !important; border-color: #1e293b !important; }
+      .card-header-subtle { background-color: #162238 !important; border-bottom-color: #1e293b !important; }
+      .detail-card { background-color: #0d1524 !important; border-color: #1e293b !important; }
+      .detail-card-row { border-bottom-color: #1a263d !important; }
+      .text-heading { color: #f8fafc !important; }
+      .text-body { color: #cbd5e1 !important; }
+      .text-muted { color: #94a3b8 !important; }
+      .footer-box { background-color: #0d1524 !important; border-top-color: #1e293b !important; }
+      .badge-pill { background-color: #1e293b !important; border-color: #334155 !important; color: #93c5fd !important; }
+      .logo-light { display: none !important; }
+      .logo-dark { display: block !important; }
+    }
+  </style>
+</head>
+<body style="margin: 0; padding: 0; background-color: #f8fafc;" class="email-bg">
+  <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" class="email-bg" style="background-color: #f8fafc; table-layout: fixed;">
+    <tr>
+      <td align="center" style="padding: 40px 12px 60px;">
+        <!-- Container table -->
+        <!--[if (gte mso 9)|(IE)]>
+        <table align="center" border="0" cellspacing="0" cellpadding="0" width="580">
+        <tr>
+        <td align="center" valign="top" width="580">
+        <![endif]-->
+        <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="max-width: 580px; margin: 0 auto; text-align: left;" class="email-container">
+          
+          <!-- BRAND LOGO HEADER -->
+          <tr>
+            <td align="center" style="padding: 0 0 28px;">
+              <a href="{{ frontend_url }}" target="_blank" style="text-decoration: none; display: inline-block;">
+                <img src="{{ logo_url }}" alt="{{ brand_name }}" width="165" height="auto" class="logo-light" style="display: block; width: 165px; max-width: 165px; height: auto; border: 0; outline: none; margin: 0 auto;" />
+                {% if logo_dark_url and logo_dark_url != logo_url %}
+                <img src="{{ logo_dark_url }}" alt="{{ brand_name }}" width="165" height="auto" class="logo-dark" style="display: none; width: 165px; max-width: 165px; height: auto; border: 0; outline: none; margin: 0 auto;" />
+                {% endif %}
+              </a>
+            </td>
+          </tr>
+
+          <!-- MAIN CARD -->
+          <tr>
+            <td>
+              <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" class="card-box" style="background-color: #ffffff; border: 1px solid #e2e8f0; border-radius: 20px; overflow: hidden; box-shadow: 0 10px 25px -5px rgba(15, 23, 42, 0.05);">
+                
+                {% block card_header %}
+                <!-- Optional Card Top Banner -->
+                {% endblock %}
+
+                <!-- Card Body -->
+                <tr>
+                  <td class="mobile-padding" style="padding: 40px 36px 36px;">
+                    {% block content %}
+                    <!-- Dynamic Body Content -->
+                    {% endblock %}
+                  </td>
+                </tr>
+
+                <!-- CARD FOOTER -->
+                <tr>
+                  <td class="footer-box mobile-padding" style="background-color: #f8fafc; border-top: 1px solid #edf2f7; padding: 24px 36px;">
+                    <table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
+                      <tr>
+                        <td align="center" style="font-size: 13px; line-height: 20px; color: #64748b;" class="text-muted">
+                          <p style="margin: 0 0 10px; font-weight: 500;">
+                            <a href="{{ dashboard_url }}" target="_blank" style="color: #2563eb; text-decoration: none; margin: 0 8px; font-weight: 600;">Dashboard</a>
+                            <span style="color: #cbd5e1;">&bull;</span>
+                            <a href="{{ orders_url }}" target="_blank" style="color: #2563eb; text-decoration: none; margin: 0 8px; font-weight: 600;">Orders</a>
+                            <span style="color: #cbd5e1;">&bull;</span>
+                            <a href="{{ wallet_url }}" target="_blank" style="color: #2563eb; text-decoration: none; margin: 0 8px; font-weight: 600;">Wallet</a>
+                            <span style="color: #cbd5e1;">&bull;</span>
+                            <a href="{{ tickets_url }}" target="_blank" style="color: #2563eb; text-decoration: none; margin: 0 8px; font-weight: 600;">Support</a>
+                          </p>
+                          <p style="margin: 0; font-size: 11px; line-height: 16px; color: #94a3b8;" class="text-muted">
+                            This is an official automated notification from {{ brand_name }}. Need assistance? Contact our team at <a href="mailto:{{ support_email }}" style="color: #64748b; text-decoration: underline;">{{ support_email }}</a>.
+                          </p>
+                        </td>
+                      </tr>
+                    </table>
+                  </td>
+                </tr>
+
+              </table>
+            </td>
+          </tr>
+
+          <!-- LEGAL SUBFOOTER -->
+          <tr>
+            <td align="center" style="padding: 24px 12px 0;">
+              <p style="margin: 0; font-size: 12px; line-height: 18px; color: #94a3b8;" class="text-muted">
+                &copy; {{ brand_name }} Systems Inc. All rights reserved.
+              </p>
+            </td>
+          </tr>
+
+        </table>
+        <!--[if (gte mso 9)|(IE)]>
+        </td>
+        </tr>
+        </table>
+        <![endif]-->
+      </td>
+    </tr>
+  </table>
+</body>
+</html>

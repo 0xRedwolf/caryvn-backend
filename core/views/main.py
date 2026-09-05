@@ -88,6 +88,14 @@ class LoginView(APIView):
                 refresh = RefreshToken.for_user(user)
                 user.last_login = timezone.now()
                 user.save(update_fields=['last_login'])
+
+                # Track active user device session
+                try:
+                    from ..services.session_service import register_user_session
+                    register_user_session(user, request, session_key=str(refresh['jti']))
+                except Exception as sess_err:
+                    logger.warning(f"Failed to record session on login: {sess_err}")
+
                 return Response({
                     'user': UserSerializer(user).data,
                     'tokens': {
@@ -104,13 +112,20 @@ class LoginView(APIView):
 
 
 class LogoutView(APIView):
-    """User logout - blacklist refresh token."""
+    """User logout - blacklist refresh token and deactivate session."""
     
     def post(self, request):
         try:
             refresh_token = request.data.get('refresh')
             if refresh_token:
                 token = RefreshToken(refresh_token)
+                jti = token.get('jti')
+                if jti:
+                    try:
+                        from ..models import UserSession
+                        UserSession.objects.filter(session_key=str(jti)).update(is_active=False)
+                    except Exception:
+                        pass
                 token.blacklist()
             return Response({'message': 'Successfully logged out'})
         except Exception:
@@ -345,9 +360,16 @@ class OrderCreateView(APIView):
         # pick up the task before the DB write is visible → Order.DoesNotExist → silent failure.
         # transaction.on_commit() guarantees the order row exists before the worker runs.
         order_id_str = str(order.id)
-        transaction.on_commit(
-            lambda: submit_order_to_provider.delay(order_id_str, comments)
-        )
+        def _dispatch_order():
+            try:
+                submit_order_to_provider.delay(order_id_str, comments)
+            except Exception as exc:
+                logger.warning(
+                    'Celery broker unavailable — order %s queued but not dispatched: %s',
+                    order_id_str, exc
+                )
+
+        transaction.on_commit(_dispatch_order)
 
         return Response({
             'order': OrderSerializer(order).data,
@@ -1020,6 +1042,31 @@ class AdminOrderCancelRefundView(APIView):
                 order.status = Order.Status.CANCELED
                 order.save()
                 results['refunded'] += 1
+
+                try:
+                    from ..services.email_service import email_service
+                    email_service.send_order_status_email(
+                        order,
+                        status_display='Canceled & Refunded',
+                        refund_amount=order.charge
+                    )
+                except Exception as em_err:
+                    logger.warning(f'Failed to send refund email for order {order.id}: {em_err}')
+
+                try:
+                    from ..services.audit_service import log_admin_action
+                    from ..models import AdminAuditLog
+                    log_admin_action(
+                        actor=request.user,
+                        action=AdminAuditLog.Action.ORDER_STATUS_OVERRIDE,
+                        target_model='Order',
+                        target_id=str(order.id),
+                        description=f"Admin refunded order #{str(order.id)[:8]} (₦{order.charge})",
+                        changes={'status': 'canceled', 'refund_amount': str(order.charge)},
+                        request=request
+                    )
+                except Exception as audit_err:
+                    logger.warning(f'Failed to log audit for order refund: {audit_err}')
             except Order.DoesNotExist:
                 results['errors'].append(f'Order {oid} not found')
             except Exception as e:
@@ -1360,6 +1407,21 @@ class AdminVerifyTransactionView(APIView):
                 except Exception as e:
                     logger.error(f'Failed to clear proof field: {e}')
 
+            try:
+                from ..services.audit_service import log_admin_action
+                from ..models import AdminAuditLog
+                log_admin_action(
+                    actor=request.user,
+                    action=AdminAuditLog.Action.BALANCE_ADJUSTMENT,
+                    target_model='Transaction',
+                    target_id=str(transaction.id),
+                    description=f"Admin approved deposit of ₦{credit_amount:,.2f} for {wallet.user.email} ({transaction.payment_gateway})",
+                    changes={'credited_amount': str(credit_amount), 'new_balance': str(new_balance), 'gateway': transaction.payment_gateway},
+                    request=request
+                )
+            except Exception as audit_err:
+                logger.warning(f"Failed to record audit log on deposit approval: {audit_err}")
+
             response_data = {
                 'message': 'Deposit approved and credited successfully',
                 'new_balance': str(new_balance),
@@ -1441,7 +1503,22 @@ class AdminFailTransactionView(APIView):
             
         wallet = transaction.wallet
         wallet.fail_deposit(transaction)
-        
+
+        try:
+            from ..services.audit_service import log_admin_action
+            from ..models import AdminAuditLog
+            log_admin_action(
+                actor=request.user,
+                action=AdminAuditLog.Action.BALANCE_ADJUSTMENT,
+                target_model='Transaction',
+                target_id=str(transaction.id),
+                description=f"Admin rejected pending deposit #{str(transaction.id)[:8]} (₦{transaction.amount}) for {wallet.user.email}",
+                changes={'status': 'failed', 'amount': str(transaction.amount)},
+                request=request
+            )
+        except Exception as audit_err:
+            logger.warning(f"Failed to record audit log on deposit rejection: {audit_err}")
+
         # Clear the proof field on rejection (base64 stored in DB, no file to delete)
         if transaction.payment_proof:
             try:

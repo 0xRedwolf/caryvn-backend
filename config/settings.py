@@ -15,8 +15,8 @@ env = environ.Env(
     CORS_ALLOWED_ORIGINS=(list, ['http://localhost:3000']),
 )
 
-# Read .env file
-environ.Env.read_env(os.path.join(BASE_DIR, '.env'))
+# Read .env file (overwrite=True ensures edits to .env are picked up on reload)
+environ.Env.read_env(os.path.join(BASE_DIR, '.env'), overwrite=True)
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = env('SECRET_KEY')
@@ -182,9 +182,21 @@ CACHES = {
     }
 }
 
-# Celery Configuration (ready for background tasks)
-CELERY_BROKER_URL = REDIS_URL
-CELERY_RESULT_BACKEND = REDIS_URL
+# Celery Configuration
+IS_LOCAL_DEV = 'localhost' in REDIS_URL or '127.0.0.1' in REDIS_URL or DEBUG
+
+# In local development without Redis, execute Celery tasks synchronously (in-process)
+# so test orders, provider submissions, and email notifications fire immediately.
+CELERY_TASK_ALWAYS_EAGER = env.bool('CELERY_TASK_ALWAYS_EAGER', default=IS_LOCAL_DEV)
+CELERY_TASK_EAGER_PROPAGATES = True
+
+if CELERY_TASK_ALWAYS_EAGER:
+    CELERY_BROKER_URL = 'memory://'
+    CELERY_RESULT_BACKEND = 'cache+memory://'
+else:
+    CELERY_BROKER_URL = REDIS_URL
+    CELERY_RESULT_BACKEND = REDIS_URL
+
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
 CELERY_RESULT_SERIALIZER = 'json'
@@ -248,12 +260,14 @@ DEFAULT_FROM_EMAIL = env('DEFAULT_FROM_EMAIL', default='Caryvn <noreply@caryvn.c
 EMAIL_TIMEOUT = 10
 
 # Resend HTTP API key — used by email_service.py instead of Django SMTP (Railway blocks SMTP)
-RESEND_API_KEY = env('RESEND_API_KEY', default='')
+RESEND_API_KEY = env('RESEND_API_KEY', default=env('EMAIL_HOST_PASSWORD', default=''))
 
-# Cloudinary Configuration for Headless CMS Media Hosting
+# Cloudinary Configuration for Headless CMS Media Hosting & Email Branding
 CLOUDINARY_CLOUD_NAME = env('CLOUDINARY_CLOUD_NAME', default='')
 CLOUDINARY_API_KEY = env('CLOUDINARY_API_KEY', default='')
 CLOUDINARY_API_SECRET = env('CLOUDINARY_API_SECRET', default='')
+CLOUDINARY_LOGO_URL = env('CLOUDINARY_LOGO_URL', default='')
+CLOUDINARY_LOGO_DARK_URL = env('CLOUDINARY_LOGO_DARK_URL', default='')
 
 # Production security settings
 if not DEBUG:

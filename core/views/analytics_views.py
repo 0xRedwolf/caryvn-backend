@@ -214,6 +214,149 @@ class AdminAnalyticsView(APIView):
             for item in revenue_by_provider_query
         ]
 
+        # --- Payment Gateway Performance Funnel (windowed) ---
+        gateway_txs = (
+            Transaction.objects
+            .filter(type=Transaction.Type.DEPOSIT, created_at__gte=window_start)
+            .values('payment_gateway')
+            .annotate(
+                total_initiated=Count('id'),
+                total_success=Count('id', filter=Q(status=Transaction.Status.SUCCESS)),
+                total_failed=Count('id', filter=Q(status=Transaction.Status.FAILED)),
+                total_pending=Count('id', filter=Q(status=Transaction.Status.PENDING)),
+                completed_volume=Sum('amount', filter=Q(status=Transaction.Status.SUCCESS)),
+                total_volume=Sum('amount')
+            )
+            .order_by('-total_volume')
+        )
+
+        gateway_names = {
+            'squad': 'Squad (Card & Virtual Bank)',
+            'nexapay': 'NexaPay (Dedicated Virtual Account)',
+            'manual': 'Manual Bank Transfer',
+            'binance_pay': 'Binance Pay Direct',
+            'on_chain_usdt_trc20': 'USDT (TRC-20)',
+            'on_chain_usdt_bep20': 'USDT (BEP-20)',
+            'on_chain_sol': 'Solana (SOL)',
+        }
+
+        gateway_performance = []
+        for gw in gateway_txs:
+            code = gw['payment_gateway'] or 'unknown'
+            init_count = gw['total_initiated']
+            succ_count = gw['total_success']
+            conv_rate = round((succ_count / init_count * 100), 1) if init_count > 0 else 0
+            gateway_performance.append({
+                'gateway': code,
+                'name': gateway_names.get(code, code.replace('_', ' ').title()),
+                'initiated': init_count,
+                'completed': succ_count,
+                'failed': gw['total_failed'],
+                'pending': gw['total_pending'],
+                'volume': float(gw['completed_volume'] or 0),
+                'total_volume': float(gw['total_volume'] or 0),
+                'conversion_rate': conv_rate,
+            })
+
+        # --- VIP Customer Leaderboard (Top 10 Spenders in window) ---
+        top_customers_query = (
+            windowed_orders.exclude(status__in=['canceled', 'cancelled', 'refunded', 'failed'])
+            .values('user__id', 'user__email', 'user__first_name', 'user__username')
+            .annotate(
+                order_count=Count('id'),
+                total_spend=Sum('charge'),
+                total_profit=Sum('profit')
+            )
+            .order_by('-total_spend')[:10]
+        )
+
+        top_customers = [
+            {
+                'id': str(c['user__id']),
+                'email': c['user__email'],
+                'name': c['user__first_name'] or c['user__username'] or c['user__email'].split('@')[0],
+                'orders': c['order_count'],
+                'total_spend': float(c['total_spend'] or 0),
+                'total_profit': float(c['total_profit'] or 0),
+            }
+            for c in top_customers_query
+        ]
+
+        # --- Platform Margins & Volume breakdown ---
+        platform_margins_query = (
+            windowed_orders.exclude(status__in=['canceled', 'cancelled', 'refunded', 'failed'])
+            .values('service__category__platform')
+            .annotate(
+                revenue=Sum('charge'),
+                profit=Sum('profit'),
+                orders=Count('id')
+            )
+            .order_by('-revenue')
+        )
+
+        platform_margins = []
+        for p in platform_margins_query:
+            pname = p['service__category__platform']
+            if not pname:
+                continue
+            rev = float(p['revenue'] or 0)
+            prof = float(p['profit'] or 0)
+            margin = round((prof / rev * 100), 1) if rev > 0 else 0
+            platform_margins.append({
+                'platform': pname,
+                'revenue': rev,
+                'profit': prof,
+                'orders': p['orders'],
+                'margin_rate': margin,
+            })
+
+        # --- High Refund Rate Services (Quality Telemetry) ---
+        service_refund_query = (
+            windowed_orders
+            .values('service__name', 'service__category_name')
+            .annotate(
+                total_count=Count('id'),
+                refund_count=Count('id', filter=Q(status__in=['canceled', 'cancelled', 'refunded'])),
+            )
+            .filter(total_count__gte=2)
+            .order_by('-refund_count')[:6]
+        )
+
+        service_refund_rates = []
+        for s in service_refund_query:
+            tot = s['total_count']
+            ref = s['refund_count']
+            rate = round((ref / tot * 100), 1) if tot > 0 else 0
+            service_refund_rates.append({
+                'service_name': s['service__name'] or 'Unknown',
+                'category': s['service__category_name'] or '',
+                'total_orders': tot,
+                'refunded_orders': ref,
+                'refund_rate': rate,
+            })
+
+        # --- Provider Spend Velocity & Runway Forecast ---
+        from core.models import Provider
+        provider_runway = []
+        for prov in Provider.objects.filter(is_active=True):
+            prov_orders_7d = Order.objects.filter(
+                provider=prov,
+                created_at__gte=seven_days_ago
+            ).exclude(status__in=['canceled', 'cancelled', 'refunded', 'failed'])
+
+            prov_orders_count = prov_orders_7d.count()
+            prov_spend_7d = prov_orders_7d.aggregate(total=Sum('charge'))['total'] or Decimal('0')
+            daily_burn = float(prov_spend_7d) / 7.0
+
+            provider_runway.append({
+                'provider_id': prov.id,
+                'name': prov.name,
+                'currency': prov.currency,
+                'orders_7d': prov_orders_count,
+                'spend_7d_ngn': float(prov_spend_7d),
+                'daily_burn_ngn': round(daily_burn, 2),
+            })
+
         return Response({
             'days': days,  # Echo back selected range so frontend can confirm
             'summary': {
@@ -242,4 +385,9 @@ class AdminAnalyticsView(APIView):
                 {'source': 'Web', 'orders': web_orders, 'revenue': float(web_revenue)},
                 {'source': 'API', 'orders': api_orders, 'revenue': float(api_revenue)},
             ],
+            'gateway_performance': gateway_performance,
+            'top_customers': top_customers,
+            'platform_margins': platform_margins,
+            'service_refund_rates': service_refund_rates,
+            'provider_runway': provider_runway,
         })

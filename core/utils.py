@@ -76,6 +76,20 @@ def sync_active_orders(provider_slug=None):
                         
                     order.save()
                     updated += 1
+
+                    # Send milestone email notification on completion/partial/cancellation
+                    if new_status in (Order.Status.COMPLETED, Order.Status.PARTIAL, Order.Status.CANCELED, Order.Status.REFUNDED):
+                        try:
+                            from core.services.email_service import email_service
+                            status_label = {
+                                Order.Status.COMPLETED: 'Completed',
+                                Order.Status.PARTIAL: 'Partial Delivery',
+                                Order.Status.CANCELED: 'Canceled',
+                                Order.Status.REFUNDED: 'Refunded',
+                            }.get(new_status, new_status.title())
+                            email_service.send_order_status_email(order, status_label)
+                        except Exception as em_err:
+                            logger.warning(f'Failed to send order status milestone email for order {order.id}: {em_err}')
                 else:
                     if 'remains' in result and result['remains']:
                         remains = int(result['remains'])

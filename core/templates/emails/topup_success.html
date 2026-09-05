@@ -1,123 +1,97 @@
-<!doctype html>
-<html>
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Top-Up Successful</title>
-    <style>
-      body {
-        font-family:
-          -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
-        background: #0f172a;
-        margin: 0;
-        padding: 20px;
-      }
-      .container {
-        max-width: 520px;
-        margin: 0 auto;
-        background: #1e293b;
-        border-radius: 16px;
-        overflow: hidden;
-      }
-      .header {
-        background: linear-gradient(135deg, #059669 0%, #047857 100%);
-        padding: 32px;
-        text-align: center;
-      }
-      .header h1 {
-        color: #fff;
-        font-size: 22px;
-        margin: 0 0 4px;
-      }
-      .header p {
-        color: rgba(255, 255, 255, 0.8);
-        font-size: 14px;
-        margin: 0;
-      }
-      .body {
-        padding: 32px;
-      }
-      .greeting {
-        color: #e2e8f0;
-        font-size: 16px;
-        margin: 0 0 16px;
-      }
-      .amount-card {
-        background: #0f172a;
-        border-radius: 12px;
-        padding: 24px;
-        margin: 20px 0;
-        text-align: center;
-      }
-      .amount {
-        color: #10b981;
-        font-size: 32px;
-        font-weight: 700;
-        margin: 0;
-      }
-      .balance-row {
-        display: flex;
-        justify-content: center;
-        gap: 8px;
-        margin-top: 12px;
-      }
-      .balance-label {
-        color: #94a3b8;
-        font-size: 13px;
-      }
-      .balance-value {
-        color: #e2e8f0;
-        font-size: 13px;
-        font-weight: 600;
-      }
-      .footer {
-        padding: 24px 32px;
-        text-align: center;
-        border-top: 1px solid rgba(255, 255, 255, 0.05);
-      }
-      .footer p {
-        color: #64748b;
-        font-size: 12px;
-        margin: 0;
-      }
-    </style>
-  </head>
-  <body>
-    <div class="container">
-      <div class="header">
-        <img
-          src="{{ logo_url }}"
-          alt="{{ brand_name }}"
-          height="40"
-          style="margin-bottom: 20px"
-        />
-        <h1>Top-Up Successful ✓</h1>
-        <p>{{ brand_name }}</p>
-      </div>
-      <div class="body">
-        <p class="greeting">Hi {{ user.first_name|default:user.email }},</p>
-        <p style="color: #94a3b8; font-size: 14px">
-          Your wallet has been credited successfully.
-        </p>
+{% extends "emails/base_luxury_email.html" %}
 
-        <div class="amount-card">
-          <p style="color: #94a3b8; font-size: 13px; margin: 0 0 8px">
-            Amount Added
-          </p>
-          <p class="amount">+₦{{ amount }}</p>
-          <div class="balance-row">
-            <span class="balance-label">New Balance:</span>
-            <span class="balance-value">₦{{ new_balance }}</span>
-          </div>
-        </div>
+{% block title %}Wallet Top-Up Successful (+₦{{ amount }}) — {{ brand_name }}{% endblock %}
 
-        <p style="color: #94a3b8; font-size: 13px">
-          You can now use your balance to place orders on the platform.
-        </p>
-      </div>
-      <div class="footer">
-        <p>&copy; {{ brand_name }}. All rights reserved.</p>
-      </div>
-    </div>
-  </body>
-</html>
+{% block content %}
+<!-- STATUS BADGE -->
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 24px;">
+  <tr>
+    <td align="center">
+      <span class="badge-pill" style="display: inline-block; background-color: #ecfdf5; border: 1px solid #a7f3d0; color: #047857; font-size: 12px; font-weight: 700; letter-spacing: 0.05em; text-transform: uppercase; padding: 6px 16px; border-radius: 9999px;">
+        ✓ Deposit Confirmed
+      </span>
+    </td>
+  </tr>
+</table>
+
+<!-- MAIN HEADLINE -->
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin-bottom: 8px;">
+  <tr>
+    <td align="center">
+      <h1 class="text-heading" style="margin: 0; font-size: 24px; font-weight: 800; color: #0f172a; letter-spacing: -0.025em; line-height: 1.3;">
+        Your wallet has been credited
+      </h1>
+    </td>
+  </tr>
+  <tr>
+    <td align="center" style="padding-top: 8px;">
+      <p class="text-muted" style="margin: 0; font-size: 14px; line-height: 1.6; color: #64748b;">
+        Hi <strong>{{ user.first_name|default:user.email }}</strong>, your payment has been verified and added to your balance.
+      </p>
+    </td>
+  </tr>
+</table>
+
+<!-- AMOUNT HERO CARD -->
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin: 28px 0 20px;">
+  <tr>
+    <td align="center">
+      <table role="presentation" border="0" cellpadding="0" cellspacing="0" class="detail-card" style="background-color: #f0fdf4; border: 1px solid #bbf7d0; border-radius: 16px; padding: 24px 32px; width: 100%; text-align: center;">
+        <tr>
+          <td align="center">
+            <span style="font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.08em; color: #15803d; display: block; margin-bottom: 6px;">Amount Credited</span>
+            <span style="font-size: 32px; font-weight: 800; color: #15803d; letter-spacing: -0.03em; display: block; line-height: 1;">+₦{{ amount }}</span>
+          </td>
+        </tr>
+      </table>
+    </td>
+  </tr>
+</table>
+
+<!-- BREAKDOWN TABLE -->
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" class="detail-card" style="background-color: #f8fafc; border: 1px solid #e2e8f0; border-radius: 16px; margin: 0 0 28px; overflow: hidden;">
+  
+  <!-- Row: Status -->
+  <tr class="detail-card-row" style="border-bottom: 1px solid #edf2f7;">
+    <td style="padding: 14px 20px; font-size: 13px; color: #64748b; font-weight: 500;" class="text-muted">Transaction Status</td>
+    <td align="right" style="padding: 14px 20px; font-size: 13px; font-weight: 700; color: #16a34a;">Completed</td>
+  </tr>
+
+  <!-- Row: New Balance -->
+  <tr class="card-header-subtle" style="background-color: #f8fafc;">
+    <td style="padding: 16px 20px; font-size: 14px; color: #0f172a; font-weight: 600;" class="text-heading">New Available Balance</td>
+    <td align="right" style="padding: 16px 20px; font-size: 18px; font-weight: 800; color: #0f172a;" class="text-heading">₦{{ new_balance }}</td>
+  </tr>
+
+</table>
+
+<!-- CTA BUTTON -->
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%" style="margin: 28px 0 20px;">
+  <tr>
+    <td align="center">
+      <!--[if mso]>
+      <v:roundrect xmlns:v="urn:schemas-microsoft-com:vml" xmlns:w="urn:schemas-microsoft-com:office:word" href="{{ frontend_url }}/dashboard/new-order" style="height:48px;v-text-anchor:middle;width:220px;" arcsize="25%" stroke="f" fillcolor="#2563eb">
+        <w:anchorlock/>
+        <center style="color:#ffffff;font-family:sans-serif;font-size:14px;font-weight:bold;">Create New Order &rarr;</center>
+      </v:roundrect>
+      <![endif]-->
+      <!--[if !mso]><!-->
+      <a href="{{ frontend_url }}/dashboard/new-order" target="_blank" style="background-color: #2563eb; border-radius: 12px; color: #ffffff; display: inline-block; font-size: 14px; font-weight: 700; line-height: 48px; text-align: center; text-decoration: none; width: 220px; -webkit-text-size-adjust: none; box-shadow: 0 4px 14px rgba(37, 99, 235, 0.35);">
+        Create New Order &rarr;
+      </a>
+      <!--<![endif]-->
+    </td>
+  </tr>
+</table>
+
+<!-- GUARANTEE NOTE -->
+<table role="presentation" border="0" cellpadding="0" cellspacing="0" width="100%">
+  <tr>
+    <td align="center" style="padding-top: 10px;">
+      <p class="text-muted" style="margin: 0; font-size: 12px; line-height: 1.6; color: #94a3b8;">
+        Your funds are available immediately. You can view all past deposits and invoices inside your <a href="{{ wallet_url }}" style="color: #2563eb; text-decoration: none; font-weight: 600;">Wallet History</a>.
+      </p>
+    </td>
+  </tr>
+</table>
+{% endblock %}

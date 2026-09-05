@@ -579,6 +579,77 @@ class UserActivity(models.Model):
     def __str__(self):
         return f"{self.user.email} - {self.action} - {self.page}"
 
+
+class UserSession(models.Model):
+    """
+    Tracks active user device sessions for multi-device management,
+    security audit, and remote revocation.
+    """
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='sessions')
+    session_key = models.CharField(max_length=255, unique=True, db_index=True)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.CharField(max_length=500, blank=True)
+    device_type = models.CharField(max_length=50, default='Desktop')  # Desktop, Mobile, Tablet
+    browser = models.CharField(max_length=100, default='Unknown Browser')
+    os = models.CharField(max_length=100, default='Unknown OS')
+    location = models.CharField(max_length=255, default='Unknown Location')
+    is_active = models.BooleanField(default=True)
+    last_active_at = models.DateTimeField(auto_now=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-last_active_at']
+        verbose_name = 'User Session'
+        verbose_name_plural = 'User Sessions'
+        indexes = [
+            models.Index(fields=['user', '-last_active_at']),
+            models.Index(fields=['session_key']),
+        ]
+
+    def __str__(self):
+        return f"{self.user.email} - {self.device_type} ({self.browser} on {self.os})"
+
+
+class AdminAuditLog(models.Model):
+    """
+    Immutable forensic audit log recording sensitive staff and system actions:
+    manual balance adjustments, service markup edits, provider secret changes,
+    manual order status overrides, and role changes.
+    """
+    class Action(models.TextChoices):
+        BALANCE_ADJUSTMENT = 'balance_adjustment', 'Manual Balance Adjustment'
+        SERVICE_PRICE_UPDATE = 'service_price_update', 'Service Price / Margin Override'
+        PROVIDER_UPDATE = 'provider_update', 'Provider Configuration Update'
+        ORDER_STATUS_OVERRIDE = 'order_status_override', 'Order Status Override / Refund'
+        USER_ROLE_CHANGE = 'user_role_change', 'User Role / Permission Change'
+        SYSTEM_SETTING = 'system_setting', 'System Setting Update'
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    actor = models.ForeignKey(User, on_delete=models.SET_NULL, null=True, related_name='admin_actions')
+    action = models.CharField(max_length=50, choices=Action.choices)
+    target_model = models.CharField(max_length=100)  # e.g. 'CustomUser', 'Order', 'Service', 'Provider'
+    target_id = models.CharField(max_length=255)
+    description = models.TextField(blank=True)
+    changes = models.JSONField(default=dict, blank=True)  # e.g. {"before": ..., "after": ...}
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'Admin Audit Log'
+        verbose_name_plural = 'Admin Audit Logs'
+        indexes = [
+            models.Index(fields=['action', '-created_at']),
+            models.Index(fields=['actor', '-created_at']),
+            models.Index(fields=['target_model', 'target_id']),
+        ]
+
+    def __str__(self):
+        actor_email = self.actor.email if self.actor else 'System'
+        return f"[{self.get_action_display()}] by {actor_email} at {self.created_at.strftime('%Y-%m-%d %H:%M')}"
+
+
 class SiteSettings(models.Model):
     """Singleton model for site-wide settings."""
     # NOTE: show_inactive_services moved to per-provider Provider.show_inactive_services
