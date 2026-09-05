@@ -6,7 +6,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from .models import (
     User, Wallet, Transaction, ServiceCategory, Service,
     MarkupRule, Order, Ticket, TicketReply, APILog, Provider,
-    PopupCard
+    PopupCard, Announcement
 )
 
 
@@ -233,3 +233,12 @@ class PopupCardAdmin(admin.ModelAdmin):
     list_filter = ('is_active',)
     search_fields = ('title', 'description')
     list_editable = ('is_active', 'order')
+
+
+@admin.register(Announcement)
+class AnnouncementAdmin(admin.ModelAdmin):
+    list_display = ('text', 'color', 'is_ping', 'is_active', 'sort_order', 'created_at')
+    list_filter = ('is_active', 'color', 'is_ping')
+    search_fields = ('text', 'link_url', 'link_text')
+    list_editable = ('is_active', 'sort_order')
+

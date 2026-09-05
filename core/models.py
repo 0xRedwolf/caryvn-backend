@@ -917,3 +917,33 @@ class BlogPost(models.Model):
 
     def __str__(self):
         return f"{self.title} ({self.status})"
+
+
+class Announcement(models.Model):
+    """Scrolling announcement ticker updates on the user dashboard."""
+    
+    class BadgeColor(models.TextChoices):
+        EMERALD = 'emerald', 'Green (Status / Live)'
+        PRIMARY = 'primary', 'Blue (New Feature / Info)'
+        AMBER = 'amber', 'Yellow (Promo / Notice)'
+        PURPLE = 'purple', 'Purple (Special)'
+        ROSE = 'rose', 'Red (Urgent / Alert)'
+
+    text = models.CharField(max_length=300, help_text="The announcement text")
+    link_url = models.URLField(max_length=500, blank=True, null=True, help_text="Optional external or internal link")
+    link_text = models.CharField(max_length=100, blank=True, null=True, help_text="Optional anchor text (e.g., 'zapotp.com')")
+    color = models.CharField(max_length=20, choices=BadgeColor.choices, default=BadgeColor.PRIMARY)
+    is_ping = models.BooleanField(default=False, help_text="Pulsing ping animation on the indicator dot")
+    is_active = models.BooleanField(default=True, help_text="Toggle visibility")
+    sort_order = models.IntegerField(default=0, help_text="Lower numbers appear first")
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['sort_order', '-created_at']
+        verbose_name = 'Announcement'
+        verbose_name_plural = 'Announcements'
+
+    def __str__(self):
+        return f"{self.text[:50]} ({self.color}) - {'Active' if self.is_active else 'Inactive'}"
+

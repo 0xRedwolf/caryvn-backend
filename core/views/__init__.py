@@ -12,3 +12,9 @@ from .admin_popup_views import (  # noqa: F401
     AdminPopupImageUploadView,
     AdminPopupToggleActiveView,
 )
+from .announcement_views import (  # noqa: F401
+    AnnouncementListView,
+    AdminAnnouncementListCreateView,
+    AdminAnnouncementDetailView,
+    AdminAnnouncementToggleView,
+)

@@ -7,7 +7,7 @@ from django.contrib.auth.password_validation import validate_password
 from .models import (
     Wallet, Transaction, ServiceCategory, Service,
     Order, Ticket, TicketReply, MarkupRule, APILog, PopupCard,
-    BlogAuthor, BlogCategory, BlogPost
+    BlogAuthor, BlogCategory, BlogPost, Announcement
 )
 
 User = get_user_model()
@@ -370,3 +370,12 @@ class BlogPostDetailSerializer(serializers.ModelSerializer):
             'faqs', 'cta_title', 'cta_description', 'cta_button_text', 'cta_url'
         )
 
+
+class AnnouncementSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = Announcement
+        fields = (
+            'id', 'text', 'link_url', 'link_text',
+            'color', 'is_ping', 'is_active', 'sort_order',
+            'created_at', 'updated_at'
+        )

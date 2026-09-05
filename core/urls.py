@@ -32,6 +32,7 @@ from .views import (
     ActivePopupCardsView, TrackPopupImpressionView, TrackPopupClickView,
     AdminPopupCardsView, AdminPopupCardDetailView, AdminPopupImageUploadView, AdminPopupToggleActiveView,
     AdminNotificationListView, AdminNotificationTestView,
+    AnnouncementListView, AdminAnnouncementListCreateView, AdminAnnouncementDetailView, AdminAnnouncementToggleView,
 )
 from .views.export_views import AdminExportUsersCSVView
 from .views.payment_views import (
@@ -91,6 +92,9 @@ urlpatterns = [
     path('popups/active/', ActivePopupCardsView.as_view(), name='active-popups'),
     path('popups/<int:popup_id>/impression/', TrackPopupImpressionView.as_view(), name='popup-impression'),
     path('popups/<int:popup_id>/click/', TrackPopupClickView.as_view(), name='popup-click'),
+    
+    # Announcement Ticker endpoints
+    path('announcements/', AnnouncementListView.as_view(), name='announcements-list'),
     
     # Order endpoints
     path('orders/', OrderListView.as_view(), name='orders'),
@@ -155,6 +159,11 @@ urlpatterns = [
     path('admin/popups/upload-image/', AdminPopupImageUploadView.as_view(), name='admin-popup-upload-image'),
     path('admin/popups/<int:popup_id>/', AdminPopupCardDetailView.as_view(), name='admin-popup-detail'),
     path('admin/popups/<int:popup_id>/toggle-active/', AdminPopupToggleActiveView.as_view(), name='admin-popup-toggle-active'),
+
+    # Admin Announcement endpoints
+    path('admin/announcements/', AdminAnnouncementListCreateView.as_view(), name='admin-announcements-list-create'),
+    path('admin/announcements/<int:pk>/', AdminAnnouncementDetailView.as_view(), name='admin-announcements-detail'),
+    path('admin/announcements/<int:pk>/toggle/', AdminAnnouncementToggleView.as_view(), name='admin-announcements-toggle'),
 
     # Admin Notifications endpoints
     path('admin/notifications/', AdminNotificationListView.as_view(), name='admin-notifications'),
