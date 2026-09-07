@@ -769,7 +769,12 @@ class NexaPayWebhookView(APIView):
         event = str(payload.get('event') or event_header or '').lower()
         data = payload.get('data') if isinstance(payload.get('data'), dict) else payload
 
-        if event in ('deposit.received', 'deposit.successful', 'collection.successful', 'payment.successful', 'transaction.successful'):
+        if event in (
+            'deposit.received', 'deposit.successful', 'deposit.success',
+            'collection.successful', 'collection.success',
+            'payment.successful', 'payment.success',
+            'transaction.successful', 'transaction.success',
+        ) or 'success' in event or 'received' in event:
             merchant_ref = (
                 data.get('merchantReference') or
                 data.get('merchant_reference') or
