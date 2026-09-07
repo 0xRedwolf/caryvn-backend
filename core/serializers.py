@@ -168,22 +168,31 @@ class OrderCreateSerializer(serializers.Serializer):
 
 
 class OrderSerializer(serializers.ModelSerializer):
-    service_name = serializers.CharField(source='service.name', read_only=True)
-    service_id = serializers.IntegerField(source='service.id', read_only=True)
-    service_has_refill = serializers.BooleanField(source='service.has_refill', read_only=True)
+    service_name = serializers.SerializerMethodField()
+    service_id = serializers.SerializerMethodField()
+    service_has_refill = serializers.SerializerMethodField()
     provider_name = serializers.CharField(source='provider.name', read_only=True, default='')
     avg_completion_time = serializers.SerializerMethodField()
     
     class Meta:
         model = Order
         fields = ('id', 'service_id', 'service_name', 'link', 'quantity',
-                  'charge', 'status', 'start_count', 'remains', 'created_at', 'completed_at',
+                  'charge', 'status', 'start_count', 'remains', 'source', 'created_at', 'completed_at',
                   'service_has_refill', 'provider_name', 'avg_completion_time')
         read_only_fields = fields
 
+    def get_service_name(self, obj):
+        return obj.service.name if obj.service else 'Custom Service'
+
+    def get_service_id(self, obj):
+        return obj.service.id if obj.service else None
+
+    def get_service_has_refill(self, obj):
+        return bool(obj.service.has_refill) if obj.service else False
+
     def get_avg_completion_time(self, obj):
-        # We can reuse the logic from ServiceListSerializer by instantiating it,
-        # or just duplicate the logic concisely. Doing it concisely:
+        if not obj.service:
+            return None
         from .models import Order
         recent = (
             Order.objects
@@ -273,7 +282,7 @@ class APILogSerializer(serializers.ModelSerializer):
 class AdminOrderSerializer(serializers.ModelSerializer):
     """Order serializer for admin with profit info."""
     user_email = serializers.CharField(source='user.email', read_only=True)
-    service_name = serializers.CharField(source='service.name', read_only=True)
+    service_name = serializers.SerializerMethodField()
     service_has_refill = serializers.BooleanField(source='service.has_refill', read_only=True)
     provider_name = serializers.CharField(source='provider.name', read_only=True, default='')
     
@@ -281,8 +290,11 @@ class AdminOrderSerializer(serializers.ModelSerializer):
         model = Order
         fields = ('id', 'user_email', 'service_name', 'link', 'quantity',
                   'provider_rate', 'user_rate', 'charge', 'profit', 'status',
-                  'provider_order_id', 'start_count', 'remains', 'created_at',
+                  'provider_order_id', 'start_count', 'remains', 'source', 'created_at',
                   'service_has_refill', 'provider_name')
+
+    def get_service_name(self, obj):
+        return obj.service.name if obj.service else 'Custom Service'
 
 
 class AdminUserSerializer(serializers.ModelSerializer):

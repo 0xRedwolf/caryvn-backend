@@ -239,7 +239,7 @@ class ResellerAPIView(APIView):
         order.save()
 
         # ── Deduct wallet ─────────────────────────────────────────────────
-        wallet.charge(charge, f'Order #{str(order.id)[:8]} - {service.name}')
+        wallet.charge(charge, f'API Order #{str(order.id)[:8]} - {service.name}')
 
         if not order.reseller_order_id:
             order.refresh_from_db()

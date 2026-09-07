@@ -357,6 +357,71 @@ class AdminAnalyticsView(APIView):
                 'daily_burn_ngn': round(daily_burn, 2),
             })
 
+        # --- Reseller API Dedicated Telemetry (windowed) ---
+        api_windowed = windowed_orders.filter(source='api')
+        api_total_orders = api_windowed.count()
+        api_valid_orders = api_windowed.exclude(status__in=['canceled', 'cancelled', 'refunded', 'failed'])
+        api_total_profit = api_valid_orders.aggregate(total=Sum('profit'))['total'] or Decimal('0')
+        api_completed_count = api_windowed.filter(status=Order.Status.COMPLETED).count()
+        api_failed_count = api_windowed.filter(status__in=[Order.Status.CANCELED, Order.Status.REFUNDED, Order.Status.FAILED]).count()
+        api_success_rate = round((api_completed_count / api_total_orders * 100), 1) if api_total_orders > 0 else 0
+
+        # Top Resellers using the API in this window
+        top_api_resellers_query = (
+            api_valid_orders
+            .values('user__id', 'user__email', 'user__username')
+            .annotate(
+                order_count=Count('id'),
+                total_spend=Sum('charge'),
+                total_profit=Sum('profit')
+            )
+            .order_by('-total_spend')[:8]
+        )
+        top_api_resellers = [
+            {
+                'user_id': str(r['user__id']),
+                'email': r['user__email'],
+                'username': r['user__username'],
+                'orders': r['order_count'],
+                'total_spend': float(r['total_spend'] or 0),
+                'total_profit': float(r['total_profit'] or 0),
+            }
+            for r in top_api_resellers_query
+        ]
+
+        # Top services consumed via API
+        api_popular_services_query = (
+            api_windowed
+            .values('service__name', 'service__category_name')
+            .annotate(
+                order_count=Count('id'),
+                total_revenue=Sum('charge'),
+                total_profit=Sum('profit'),
+            )
+            .order_by('-order_count')[:6]
+        )
+        api_popular_services = [
+            {
+                'name': s['service__name'] or 'Custom Service',
+                'category': s['service__category_name'] or 'SMM',
+                'orders': s['order_count'],
+                'revenue': float(s['total_revenue'] or 0),
+                'profit': float(s['total_profit'] or 0),
+            }
+            for s in api_popular_services_query
+        ]
+
+        api_metrics = {
+            'total_orders': api_total_orders,
+            'revenue': float(api_revenue),
+            'profit': float(api_total_profit),
+            'completed_count': api_completed_count,
+            'failed_count': api_failed_count,
+            'success_rate': api_success_rate,
+            'top_resellers': top_api_resellers,
+            'popular_services': api_popular_services,
+        }
+
         # --- OTP Virtual Numbers Metrics (windowed) ---
         otp_windowed = OTPOrder.objects.filter(created_at__gte=window_start)
         otp_total_orders = otp_windowed.count()
@@ -507,5 +572,6 @@ class AdminAnalyticsView(APIView):
             'platform_margins': platform_margins,
             'service_refund_rates': service_refund_rates,
             'provider_runway': provider_runway,
+            'api_metrics': api_metrics,
         })
 

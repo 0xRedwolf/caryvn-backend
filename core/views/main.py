@@ -386,8 +386,11 @@ class OrderListView(APIView):
         
         # Filters
         status_filter = request.query_params.get('status')
+        source_filter = request.query_params.get('source')
         if status_filter:
             orders = orders.filter(status=status_filter)
+        if source_filter:
+            orders = orders.filter(source=source_filter)
         
         # Pagination
         limit = int(request.query_params.get('limit', 20))
@@ -989,11 +992,14 @@ class AdminOrderListView(APIView):
         
         # Filters
         status_filter = request.query_params.get('status')
+        source_filter = request.query_params.get('source')
         user_filter = request.query_params.get('user')
         search = request.query_params.get('search')
         
         if status_filter:
             orders = orders.filter(status=status_filter)
+        if source_filter:
+            orders = orders.filter(source=source_filter)
         if user_filter:
             orders = orders.filter(user__email__icontains=user_filter)
         if search:
@@ -1748,8 +1754,22 @@ class AdminAllTransactionsView(APIView):
             qs = qs.filter(type='deposit')
         elif category in ('otp', 'virtual_numbers'):
             qs = qs.filter(Q(description__icontains='virtual number') | Q(description__icontains='otp'))
+        elif category in ('api', 'api_orders', 'reseller_api'):
+            qs = qs.filter(
+                Q(description__icontains='api order') |
+                Q(description__startswith='API') |
+                Q(description__icontains='[API]')
+            )
         elif category in ('smm', 'boosts'):
-            qs = qs.exclude(type='deposit').exclude(description__icontains='virtual number').exclude(description__icontains='otp')
+            qs = (
+                qs.exclude(type='deposit')
+                .exclude(type='refund')
+                .exclude(description__icontains='refund')
+                .exclude(description__icontains='virtual number')
+                .exclude(description__icontains='otp')
+                .exclude(description__icontains='api order')
+                .exclude(description__startswith='API')
+            )
         elif category in ('refund', 'refunds'):
             qs = qs.filter(Q(type='refund') | Q(description__icontains='refund'))
 
@@ -1768,9 +1788,37 @@ class AdminAllTransactionsView(APIView):
         total = qs.count()
         qs = qs[offset:offset + limit]
 
+        # Prefetch correlated OTP orders for virtual number transactions so we show true outcome
+        otp_orders_map = {}
+        tx_list = list(qs)
+        otp_tx_user_ids = [tx.wallet.user_id for tx in tx_list if 'virtual number' in (tx.description or '').lower()]
+        if otp_tx_user_ids:
+            from core.models import OTPOrder
+            recent_otps = OTPOrder.objects.filter(user_id__in=otp_tx_user_ids).order_by('-created_at')[:100]
+            for otp in recent_otps:
+                # Key by (user_id, service_name.lower())
+                k = (otp.user_id, (otp.service_name or '').strip().lower())
+                if k not in otp_orders_map:
+                    otp_orders_map[k] = otp
+
         data = []
-        for tx in qs:
+        for tx in tx_list:
             user = tx.wallet.user
+            desc = tx.description or ''
+            desc_lower = desc.lower()
+            is_api = 'api order' in desc_lower or desc.startswith('API') or '[api]' in desc_lower
+            
+            # Correlate OTP order status if this is a virtual number charge
+            otp_status = None
+            if 'virtual number:' in desc_lower and tx.type == 'charge':
+                # format is usually: "Virtual Number: WhatsApp (US)"
+                # Extract service name before parenthesis
+                clean_desc = desc.split(':', 1)[-1].strip()
+                s_name = clean_desc.split('(')[0].strip().lower()
+                matched_otp = otp_orders_map.get((user.id, s_name))
+                if matched_otp:
+                    otp_status = matched_otp.status
+
             data.append({
                 'id': str(tx.id),
                 'user_email': user.email,
@@ -1779,9 +1827,11 @@ class AdminAllTransactionsView(APIView):
                 'amount': str(tx.amount),
                 'description': tx.description,
                 'status': tx.status,
+                'otp_status': otp_status,
                 'payment_gateway': tx.payment_gateway,
                 'payment_reference': tx.payment_reference,
                 'has_proof': bool(tx.payment_proof),
+                'is_api': is_api,
                 'created_at': tx.created_at.isoformat(),
             })
 
