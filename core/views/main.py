@@ -1442,28 +1442,69 @@ class AdminVerifyTransactionView(APIView):
 
         # NexaPay gateway: query NexaPay to verify if user actually paid before crediting
         if is_nexapay:
+            force = request.data.get('force') is True or request.query_params.get('force') == 'true'
+
+            # If admin explicitly force-approves (e.g. after reviewing merchant dashboard when query 401s)
+            if force:
+                wallet = transaction.wallet
+                new_balance = wallet.confirm_deposit(transaction)
+                try:
+                    email_service.send_topup_success(
+                        user=wallet.user,
+                        amount=transaction.amount,
+                        new_balance=new_balance,
+                    )
+                except Exception as e:
+                    logger.warning(f'Topup success email failed (non-critical): {e}')
+
+                try:
+                    from ..services.audit_service import log_admin_action
+                    from ..models import AdminAuditLog
+                    log_admin_action(
+                        actor=request.user,
+                        action=AdminAuditLog.Action.BALANCE_ADJUSTMENT,
+                        target_model='Transaction',
+                        target_id=str(transaction.id),
+                        description=f"Admin force-approved NexaPay deposit of ₦{transaction.amount:,.2f} for {wallet.user.email}",
+                        changes={'credited_amount': str(transaction.amount), 'new_balance': str(new_balance), 'gateway': 'nexapay', 'forced': True},
+                        request=request
+                    )
+                except Exception as audit_err:
+                    logger.warning(f"Failed to record audit log on forced NexaPay verification: {audit_err}")
+
+                return Response({
+                    'message': 'NexaPay payment approved and credited successfully via admin override',
+                    'new_balance': str(new_balance),
+                    'credited_amount': str(transaction.amount),
+                    'forced': True,
+                })
+
             try:
                 from ..services.nexapay import nexapay_service, NexaPayPaymentError
                 try:
                     requery_res = nexapay_service.requery_virtual_account(transaction.payment_reference)
                 except NexaPayPaymentError as e:
-                    return Response({'error': f'NexaPay gateway query failed: {str(e)}'}, status=status.HTTP_502_BAD_GATEWAY)
+                    return Response({'error': f'NexaPay gateway query failed: {str(e)}', 'can_force': True}, status=status.HTTP_502_BAD_GATEWAY)
                 except Exception as e:
-                    return Response({'error': f'Could not query NexaPay: {str(e)}'}, status=status.HTTP_502_BAD_GATEWAY)
+                    return Response({'error': f'Could not query NexaPay: {str(e)}', 'can_force': True}, status=status.HTTP_502_BAD_GATEWAY)
 
                 status_str = str(requery_res.get('status', '')).upper()
                 data_dict = requery_res.get('data') if isinstance(requery_res.get('data'), dict) else {}
-                is_confirmed = requery_res.get('found') and (
-                    status_str in ('PAID', 'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'CREDITED', 'RECEIVED', 'FUNDED')
-                    or data_dict.get('isPaid') is True
-                    or data_dict.get('paid') is True
-                    or data_dict.get('status') in ('PAID', 'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'CREDITED')
+                is_confirmed = requery_res.get('confirmed') is True or (
+                    requery_res.get('found') and (
+                        status_str in ('PAID', 'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'CREDITED', 'RECEIVED', 'FUNDED')
+                        or data_dict.get('isPaid') is True
+                        or data_dict.get('paid') is True
+                        or str(data_dict.get('status', '')).upper() in ('PAID', 'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'CREDITED')
+                    )
                 )
 
                 if not is_confirmed:
                     acc_status = requery_res.get('status') or 'NOT_PAID'
+                    msg = requery_res.get('message') or requery_res.get('error') or f'Account is not paid (Current status: {acc_status})'
                     return Response({
-                        'error': f'NexaPay verification failed: Account is not paid (Current status: {acc_status})',
+                        'error': f'NexaPay verification failed: {msg}',
+                        'can_force': True,
                         'gateway_details': requery_res,
                     }, status=status.HTTP_400_BAD_REQUEST)
 

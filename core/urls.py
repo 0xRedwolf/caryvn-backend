@@ -87,6 +87,8 @@ urlpatterns = [
     # Payment webhooks (no auth — validated by signature)
     path('payments/squad/webhook/', SquadWebhookView.as_view(), name='squad-webhook'),
     path('payments/nexapay/webhook/', NexaPayWebhookView.as_view(), name='nexapay-webhook'),
+    path('wallet/topup/nexapay/webhook/', NexaPayWebhookView.as_view(), name='nexapay-webhook-alt'),
+    path('nexapay/webhook/', NexaPayWebhookView.as_view(), name='nexapay-webhook-short'),
     
     # Service endpoints
     path('services/', ServiceListView.as_view(), name='services'),

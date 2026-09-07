@@ -691,11 +691,13 @@ class VerifyNexaPayTopupView(APIView):
             # If NexaPay recorded payment or completed
             status_str = str(requery.get('status', '')).upper()
             data_dict = requery.get('data') if isinstance(requery.get('data'), dict) else {}
-            is_confirmed = requery.get('found') and (
-                status_str in ('PAID', 'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'CREDITED', 'RECEIVED', 'FUNDED')
-                or data_dict.get('isPaid') is True
-                or data_dict.get('paid') is True
-                or data_dict.get('status') in ('PAID', 'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'CREDITED')
+            is_confirmed = requery.get('confirmed') is True or (
+                requery.get('found') and (
+                    status_str in ('PAID', 'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'CREDITED', 'RECEIVED', 'FUNDED')
+                    or data_dict.get('isPaid') is True
+                    or data_dict.get('paid') is True
+                    or str(data_dict.get('status', '')).upper() in ('PAID', 'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'CREDITED')
+                )
             )
             if is_confirmed:
                 new_balance = wallet.confirm_deposit(transaction)
@@ -733,6 +735,7 @@ class NexaPayWebhookView(APIView):
     def post(self, request):
         from django.conf import settings as django_settings
         from core.services.nexapay import nexapay_service
+        from django.db.models import Q
 
         raw_body = request.body
         signature = request.META.get('HTTP_X_NEXAPAY_SIGNATURE', '')
@@ -763,14 +766,16 @@ class NexaPayWebhookView(APIView):
         except json.JSONDecodeError:
             return Response({'error': 'Invalid JSON'}, status=status.HTTP_400_BAD_REQUEST)
 
-        event = payload.get('event') or event_header
-        data = payload.get('data') or payload
+        event = str(payload.get('event') or event_header or '').lower()
+        data = payload.get('data') if isinstance(payload.get('data'), dict) else payload
 
-        if event == 'deposit.received':
+        if event in ('deposit.received', 'deposit.successful', 'collection.successful', 'payment.successful', 'transaction.successful'):
             merchant_ref = (
                 data.get('merchantReference') or
                 data.get('merchant_reference') or
-                data.get('reference') or ''
+                data.get('reference') or
+                data.get('transactionId') or
+                (data.get('metadata') or {}).get('transaction_ref') or ''
             )
             raw_amount = data.get('amount')
 
@@ -781,9 +786,13 @@ class NexaPayWebhookView(APIView):
             try:
                 transaction = Transaction.objects.select_related(
                     'wallet', 'wallet__user'
-                ).get(payment_reference=merchant_ref)
+                ).filter(
+                    Q(payment_reference=merchant_ref) |
+                    Q(payment_reference=data.get('reference', '')) |
+                    Q(payment_reference=data.get('merchantReference', ''))
+                ).first()
 
-                if transaction.status == Transaction.Status.PENDING:
+                if transaction and transaction.status == Transaction.Status.PENDING:
                     # Amount sanity check if amount supplied in webhook
                     if raw_amount:
                         try:
