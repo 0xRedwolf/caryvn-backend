@@ -947,3 +947,128 @@ class Announcement(models.Model):
     def __str__(self):
         return f"{self.text[:50]} ({self.color}) - {'Active' if self.is_active else 'Inactive'}"
 
+
+class OTPProviderSetting(models.Model):
+    """
+    Configuration settings for ZapOTP upstream virtual number provider.
+    Singleton pattern - only one active configuration should exist.
+    """
+    api_key = models.CharField(max_length=255, blank=True, help_text="ZapOTP Bearer API Key")
+    base_url = models.URLField(default="https://zapotp.com/account/api/v1", help_text="ZapOTP Base API Endpoint")
+    is_active = models.BooleanField(default=True, help_text="Master toggle to enable/disable OTP verification service")
+    
+    # Hybrid Pricing Config
+    markup_percentage = models.DecimalField(
+        max_digits=6, 
+        decimal_places=2, 
+        default=Decimal('30.00'), 
+        help_text="Markup percentage applied on top of ZapOTP base price (e.g. 30.00 for 30%)"
+    )
+    min_margin = models.DecimalField(
+        max_digits=10, 
+        decimal_places=2, 
+        default=Decimal('150.00'), 
+        help_text="Minimum profit floor in NGN per number (e.g. 150.00 NGN)"
+    )
+    
+    # Float & Health Monitoring
+    low_balance_threshold = models.DecimalField(
+        max_digits=12, 
+        decimal_places=2, 
+        default=Decimal('15000.00'), 
+        help_text="ZapOTP wallet balance threshold below which admins are alerted"
+    )
+    cached_balance = models.DecimalField(
+        max_digits=12, 
+        decimal_places=2, 
+        default=Decimal('0.00'), 
+        help_text="Last known upstream ZapOTP balance"
+    )
+    last_balance_check = models.DateTimeField(null=True, blank=True)
+    
+    created_at = models.DateTimeField(auto_now_add=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        verbose_name = 'OTP Provider Setting'
+        verbose_name_plural = 'OTP Provider Settings'
+
+    def __str__(self):
+        return f"ZapOTP Config ({'Enabled' if self.is_active else 'Disabled'}) - Markup: {self.markup_percentage}% (Min: ₦{self.min_margin})"
+
+    @classmethod
+    def get_settings(cls):
+        """Get or create the singleton settings instance."""
+        obj, _ = cls.objects.get_or_create(id=1)
+        return obj
+
+    def calculate_price(self, base_cost):
+        """
+        Calculate user charge using Hybrid markup model:
+        user_price = max(base_cost * (1 + markup_pct/100), base_cost + min_margin)
+        """
+        base = Decimal(str(base_cost))
+        pct_multiplier = Decimal('1.0') + (self.markup_percentage / Decimal('100.0'))
+        pct_price = (base * pct_multiplier).quantize(Decimal('1.00'))
+        flat_price = (base + self.min_margin).quantize(Decimal('1.00'))
+        return max(pct_price, flat_price)
+
+
+class OTPOrder(models.Model):
+    """
+    Virtual number rental order for SMS OTP verification.
+    """
+    class Status(models.TextChoices):
+        PENDING = 'PENDING', 'Pending (Listening for SMS)'
+        RECEIVED = 'RECEIVED', 'Received (Code Delivered)'
+        CANCELED = 'CANCELED', 'Canceled (Refunded)'
+        EXPIRED = 'EXPIRED', 'Expired (Auto-Refunded)'
+        REFUNDED = 'REFUNDED', 'Refunded'
+
+    class RentalType(models.TextChoices):
+        SHORT = 'short', 'Short-Term (Single OTP)'
+        LONG = 'long', 'Long-Term (3-30 Days)'
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='otp_orders')
+    
+    # ZapOTP Upstream Details
+    provider_order_id = models.CharField(max_length=100, db_index=True, help_text="ZapOTP order ID")
+    phone_number = models.CharField(max_length=50, help_text="Rented phone number")
+    country = models.CharField(max_length=10, default='US', help_text="ISO country code")
+    service_id = models.CharField(max_length=100, help_text="ZapOTP service identifier (e.g. whatsapp)")
+    service_name = models.CharField(max_length=150, help_text="Display service name (e.g. WhatsApp)")
+    provider = models.CharField(max_length=50, default='global', help_text="ZapOTP provider pool")
+    rental_type = models.CharField(max_length=20, choices=RentalType.choices, default=RentalType.SHORT)
+    rental_days = models.IntegerField(default=0, help_text="Rental days if long-term")
+
+    # Financial & Ledger Details (NGN)
+    provider_cost = models.DecimalField(max_digits=12, decimal_places=2, help_text="Cost charged by ZapOTP in NGN")
+    user_charge = models.DecimalField(max_digits=12, decimal_places=2, help_text="Amount deducted from user wallet in NGN")
+    profit = models.DecimalField(max_digits=12, decimal_places=2, default=Decimal('0.00'), help_text="user_charge - provider_cost")
+
+    # SMS Verification Status & Data
+    status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True)
+    sms_code = models.CharField(max_length=50, blank=True, null=True, help_text="Extracted verification code")
+    full_sms = models.TextField(blank=True, default='', help_text="Full received SMS text body")
+    
+    # Time Tracking & Auto-Expiry
+    expires_at = models.DateTimeField(db_index=True, help_text="When order expires and becomes eligible for auto-refund")
+    received_at = models.DateTimeField(null=True, blank=True)
+    refunded_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True, db_index=True)
+    updated_at = models.DateTimeField(auto_now=True)
+
+    class Meta:
+        ordering = ['-created_at']
+        verbose_name = 'OTP Order'
+        verbose_name_plural = 'OTP Orders'
+        indexes = [
+            models.Index(fields=['user', '-created_at']),
+            models.Index(fields=['status', 'expires_at']),
+        ]
+
+    def __str__(self):
+        return f"{self.service_name} ({self.phone_number}) - {self.status} (₦{self.user_charge})"
+
+

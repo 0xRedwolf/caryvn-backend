@@ -12,7 +12,7 @@ from rest_framework.response import Response
 from rest_framework.views import APIView
 from django.contrib.auth import get_user_model
 
-from core.models import Order, Transaction, Service
+from core.models import Order, Transaction, Service, OTPOrder
 
 User = get_user_model()
 
@@ -357,14 +357,119 @@ class AdminAnalyticsView(APIView):
                 'daily_burn_ngn': round(daily_burn, 2),
             })
 
+        # --- OTP Virtual Numbers Metrics (windowed) ---
+        otp_windowed = OTPOrder.objects.filter(created_at__gte=window_start)
+        otp_total_orders = otp_windowed.count()
+        otp_received_orders = otp_windowed.filter(status=OTPOrder.Status.RECEIVED)
+        otp_received_count = otp_received_orders.count()
+        otp_refunded_count = otp_windowed.filter(status__in=[OTPOrder.Status.REFUNDED, OTPOrder.Status.CANCELED, OTPOrder.Status.EXPIRED]).count()
+        otp_active_listening = otp_windowed.filter(status=OTPOrder.Status.PENDING).count()
+        
+        otp_revenue = otp_received_orders.aggregate(total=Sum('user_charge'))['total'] or Decimal('0')
+        otp_profit = otp_received_orders.aggregate(total=Sum('profit'))['total'] or Decimal('0')
+        otp_success_rate = round((otp_received_count / otp_total_orders * 100), 1) if otp_total_orders > 0 else 0
+
+        # OTP popular services in window
+        otp_popular_services = (
+            otp_windowed
+            .values('service_name', 'country')
+            .annotate(
+                order_count=Count('id'),
+                total_revenue=Sum('user_charge', filter=Q(status=OTPOrder.Status.RECEIVED)),
+                total_profit=Sum('profit', filter=Q(status=OTPOrder.Status.RECEIVED)),
+                received_count=Count('id', filter=Q(status=OTPOrder.Status.RECEIVED)),
+            )
+            .order_by('-order_count')[:10]
+        )
+        otp_services_data = [
+            {
+                'service_name': item['service_name'] or 'Unknown',
+                'country': item['country'] or 'US',
+                'orders': item['order_count'],
+                'received': item['received_count'],
+                'revenue': float(item['total_revenue'] or 0),
+                'profit': float(item['total_profit'] or 0),
+            }
+            for item in otp_popular_services
+        ]
+
+        # OTP daily chart in window
+        otp_daily = (
+            otp_windowed
+            .filter(status=OTPOrder.Status.RECEIVED)
+            .annotate(date=TruncDate('created_at'))
+            .values('date')
+            .annotate(
+                revenue=Sum('user_charge'),
+                profit=Sum('profit'),
+                count=Count('id'),
+            )
+            .order_by('date')
+        )
+        otp_revenue_data = [
+            {
+                'date': item['date'].isoformat(),
+                'revenue': float(item['revenue'] or 0),
+                'profit': float(item['profit'] or 0),
+                'orders': item['count'],
+            }
+            for item in otp_daily
+        ]
+
+        # Combined daily chart
+        daily_dict = {}
+        for r in revenue_data:
+            d = r['date']
+            daily_dict[d] = {
+                'date': d,
+                'revenue': r['revenue'],
+                'profit': r['profit'],
+                'orders': r['orders'],
+                'smm_revenue': r['revenue'],
+                'smm_profit': r['profit'],
+                'otp_revenue': 0.0,
+                'otp_profit': 0.0,
+            }
+        for o in otp_revenue_data:
+            d = o['date']
+            if d not in daily_dict:
+                daily_dict[d] = {
+                    'date': d,
+                    'revenue': o['revenue'],
+                    'profit': o['profit'],
+                    'orders': o['orders'],
+                    'smm_revenue': 0.0,
+                    'smm_profit': 0.0,
+                    'otp_revenue': o['revenue'],
+                    'otp_profit': o['profit'],
+                }
+            else:
+                daily_dict[d]['revenue'] += o['revenue']
+                daily_dict[d]['profit'] += o['profit']
+                daily_dict[d]['orders'] += o['orders']
+                daily_dict[d]['otp_revenue'] += o['revenue']
+                daily_dict[d]['otp_profit'] += o['profit']
+
+        combined_chart = sorted(daily_dict.values(), key=lambda x: x['date'])
+
+        # Combined totals
+        combined_revenue = total_revenue + otp_revenue
+        combined_profit = total_profit + otp_profit
+
         return Response({
             'days': days,  # Echo back selected range so frontend can confirm
             'summary': {
-                'total_revenue': float(total_revenue),
-                'total_profit': float(total_profit),
+                'total_revenue': float(combined_revenue),
+                'total_profit': float(combined_profit),
+                'smm_revenue': float(total_revenue),
+                'smm_profit': float(total_profit),
+                'otp_revenue': float(otp_revenue),
+                'otp_profit': float(otp_profit),
                 'total_users': total_users,
-                'total_orders': total_orders,
-                'active_orders': active_orders,
+                'total_orders': total_orders + otp_total_orders,
+                'smm_orders': total_orders,
+                'otp_orders': otp_total_orders,
+                'active_orders': active_orders + otp_active_listening,
                 'new_users_7d': new_users_7d,
                 'revenue_trend': revenue_trend,
                 'completion_rate': completion_rate,
@@ -376,7 +481,19 @@ class AdminAnalyticsView(APIView):
                 'web_revenue': float(web_revenue),
                 'api_revenue': float(api_revenue),
             },
+            'otp_metrics': {
+                'total_orders': otp_total_orders,
+                'received_count': otp_received_count,
+                'refunded_count': otp_refunded_count,
+                'active_listening': otp_active_listening,
+                'success_rate': otp_success_rate,
+                'revenue': float(otp_revenue),
+                'profit': float(otp_profit),
+                'popular_services': otp_services_data,
+                'revenue_chart': otp_revenue_data,
+            },
             'revenue_chart': revenue_data,
+            'combined_chart': combined_chart,
             'user_growth_chart': user_data,
             'popular_services': services_data,
             'order_status': status_data,
@@ -391,3 +508,4 @@ class AdminAnalyticsView(APIView):
             'service_refund_rates': service_refund_rates,
             'provider_runway': provider_runway,
         })
+

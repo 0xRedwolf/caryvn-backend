@@ -51,6 +51,13 @@ from .views.activity_views import LogActivityView, AdminUserActivityView
 from .views.auth_views import PasswordResetRequestView, PasswordResetConfirmView
 from .views.session_views import UserSessionListView, UserSessionDetailView
 from .views.admin_audit_views import AdminAuditLogListView
+from .views.otp_views import (
+    OTPServicesView, OTPRentNumberView, OTPOrderPollSMSView,
+    OTPOrderCancelView, OTPOrderHistoryView, OTPStatusView
+)
+from .views.admin_otp_views import (
+    AdminOTPSettingView, AdminOTPBalanceView, AdminOTPOrdersView
+)
 
 urlpatterns = [
     # Auth endpoints
@@ -186,5 +193,19 @@ urlpatterns = [
 
     # Activity tracking
     path('activity/', LogActivityView.as_view(), name='log-activity'),
+
+    # User Virtual Number (OTP) endpoints
+    path('otp/status/', OTPStatusView.as_view(), name='otp-status'),
+    path('otp/services/', OTPServicesView.as_view(), name='otp-services'),
+    path('otp/rent/', OTPRentNumberView.as_view(), name='otp-rent'),
+    path('otp/orders/', OTPOrderHistoryView.as_view(), name='otp-orders'),
+    path('otp/orders/<uuid:pk>/sms/', OTPOrderPollSMSView.as_view(), name='otp-order-sms'),
+    path('otp/orders/<uuid:pk>/cancel/', OTPOrderCancelView.as_view(), name='otp-order-cancel'),
+
+    # Admin Virtual Number (OTP) endpoints
+    path('admin/otp/settings/', AdminOTPSettingView.as_view(), name='admin-otp-settings'),
+    path('admin/otp/balance/', AdminOTPBalanceView.as_view(), name='admin-otp-balance'),
+    path('admin/otp/orders/', AdminOTPOrdersView.as_view(), name='admin-otp-orders'),
 ]
+
 

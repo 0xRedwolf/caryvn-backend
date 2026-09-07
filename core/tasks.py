@@ -240,3 +240,122 @@ def check_provider_balances_task():
 
     return {'checked': active_providers.count(), 'alerts_created': alerts_created}
 
+
+@shared_task(name='core.tasks.cleanup_expired_otp_orders_task')
+def cleanup_expired_otp_orders_task():
+    """
+    Periodic task running every 60 seconds.
+    Finds all PENDING OTPOrders where expires_at has passed.
+    Checks ZapOTP one final time; if no SMS was received, transitions order to EXPIRED
+    and automatically 100% refunds the user's wallet.
+    """
+    from django.utils import timezone
+    from core.models import OTPOrder
+    from core.services.zapotp import ZapOTPClient, ZapOTPError
+
+    now = timezone.now()
+    expired_pending_orders = OTPOrder.objects.filter(
+        status=OTPOrder.Status.PENDING,
+        expires_at__lte=now
+    ).select_related('user', 'user__wallet')
+
+    client = ZapOTPClient()
+    refunded_count = 0
+    received_count = 0
+
+    for order in expired_pending_orders:
+        try:
+            # Final check before refund
+            try:
+                sms_data = client.get_sms(order.provider_order_id)
+                if sms_data.get('status') == 'RECEIVED' and sms_data.get('sms_code'):
+                    order.status = OTPOrder.Status.RECEIVED
+                    order.sms_code = sms_data.get('sms_code')
+                    order.full_sms = sms_data.get('full_sms', '')
+                    order.received_at = now
+                    order.save(update_fields=['status', 'sms_code', 'full_sms', 'received_at', 'updated_at'])
+                    received_count += 1
+                    continue
+            except ZapOTPError:
+                pass  # Proceed to refund
+
+            # Mark expired and refund
+            order.status = OTPOrder.Status.EXPIRED
+            order.refunded_at = now
+            order.save(update_fields=['status', 'refunded_at', 'updated_at'])
+
+            wallet = getattr(order.user, 'wallet', None)
+            if wallet:
+                wallet.refund(
+                    order.user_charge,
+                    description=f"Auto-Refund: Expired {order.service_name} ({order.phone_number})"
+                )
+                refunded_count += 1
+
+        except Exception as e:
+            logger.error(f"Error auto-refunding expired OTPOrder {order.id}: {e}", exc_info=True)
+
+    if refunded_count > 0 or received_count > 0:
+        logger.info(f"OTP Expiry Cleanup: {refunded_count} auto-refunded, {received_count} delivered at buzzer.")
+
+    return {'refunded': refunded_count, 'received_at_buzzer': received_count}
+
+
+@shared_task(name='core.tasks.check_zapotp_balance_task')
+def check_zapotp_balance_task():
+    """
+    Periodic task running every 15 minutes.
+    Checks ZapOTP upstream float balance and triggers an AdminNotification
+    if it falls below the configured low_balance_threshold.
+    """
+    from datetime import timedelta
+    from decimal import Decimal
+    from django.utils import timezone
+    from core.models import OTPProviderSetting, AdminNotification
+    from core.services.zapotp import ZapOTPClient, ZapOTPError
+
+    setting = OTPProviderSetting.get_settings()
+    if not setting.is_active or not setting.api_key:
+        return {'status': 'skipped', 'reason': 'ZapOTP inactive or no API key'}
+
+    client = ZapOTPClient()
+    try:
+        balance_info = client.get_balance()
+        balance_val = Decimal(str(balance_info.get('balance', 0.00)))
+        threshold = setting.low_balance_threshold
+
+        if balance_val < threshold:
+            # Check if recent unread alert exists in last 4 hours
+            recent_alert = AdminNotification.objects.filter(
+                notification_type=AdminNotification.NotificationType.LOW_PROVIDER_BALANCE,
+                is_read=False,
+                data__provider_name='ZapOTP',
+                created_at__gte=timezone.now() - timedelta(hours=4)
+            ).exists()
+
+            if not recent_alert:
+                severity = AdminNotification.Severity.CRITICAL if balance_val < (threshold / Decimal('2.0')) else AdminNotification.Severity.WARNING
+                AdminNotification.objects.create(
+                    notification_type=AdminNotification.NotificationType.LOW_PROVIDER_BALANCE,
+                    severity=severity,
+                    title="Low Balance Alert: ZapOTP Virtual Numbers",
+                    message=f"ZapOTP upstream balance is low at ₦{balance_val:,.2f} (threshold: ₦{threshold:,.2f}). User virtual number rentals will fail if balance hits 0.",
+                    data={
+                        'provider_name': 'ZapOTP',
+                        'balance': str(balance_val),
+                        'currency': 'NGN',
+                        'threshold': str(threshold)
+                    }
+                )
+                return {'status': 'alert_created', 'balance': float(balance_val)}
+
+        return {'status': 'ok', 'balance': float(balance_val)}
+
+    except ZapOTPError as e:
+        logger.warning(f"ZapOTP balance check error: {e}")
+        return {'status': 'error', 'detail': str(e)}
+    except Exception as e:
+        logger.error(f"Unexpected error checking ZapOTP balance: {e}")
+        return {'status': 'error', 'detail': str(e)}
+
+

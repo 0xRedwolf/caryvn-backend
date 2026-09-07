@@ -7,7 +7,8 @@ from django.contrib.auth.password_validation import validate_password
 from .models import (
     Wallet, Transaction, ServiceCategory, Service,
     Order, Ticket, TicketReply, MarkupRule, APILog, PopupCard,
-    BlogAuthor, BlogCategory, BlogPost, Announcement
+    BlogAuthor, BlogCategory, BlogPost, Announcement,
+    OTPProviderSetting, OTPOrder
 )
 
 User = get_user_model()
@@ -379,3 +380,49 @@ class AnnouncementSerializer(serializers.ModelSerializer):
             'color', 'is_ping', 'is_active', 'sort_order',
             'created_at', 'updated_at'
         )
+
+
+# === OTP Serializers ===
+
+class OTPOrderSerializer(serializers.ModelSerializer):
+    formatted_status = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = OTPOrder
+        fields = (
+            'id', 'phone_number', 'country', 'service_id', 'service_name',
+            'provider', 'rental_type', 'rental_days', 'user_charge',
+            'status', 'formatted_status', 'sms_code', 'full_sms',
+            'expires_at', 'received_at', 'refunded_at', 'created_at'
+        )
+        read_only_fields = fields
+
+
+class OTPOrderAdminSerializer(serializers.ModelSerializer):
+    user_email = serializers.EmailField(source='user.email', read_only=True)
+    user_username = serializers.CharField(source='user.username', read_only=True)
+    formatted_status = serializers.CharField(source='get_status_display', read_only=True)
+
+    class Meta:
+        model = OTPOrder
+        fields = (
+            'id', 'user_email', 'user_username', 'provider_order_id',
+            'phone_number', 'country', 'service_id', 'service_name',
+            'provider', 'rental_type', 'rental_days',
+            'provider_cost', 'user_charge', 'profit',
+            'status', 'formatted_status', 'sms_code', 'full_sms',
+            'expires_at', 'received_at', 'refunded_at', 'created_at'
+        )
+        read_only_fields = fields
+
+
+class OTPProviderSettingSerializer(serializers.ModelSerializer):
+    class Meta:
+        model = OTPProviderSetting
+        fields = (
+            'id', 'api_key', 'base_url', 'is_active',
+            'markup_percentage', 'min_margin', 'low_balance_threshold',
+            'cached_balance', 'last_balance_check', 'created_at', 'updated_at'
+        )
+        read_only_fields = ('id', 'cached_balance', 'last_balance_check', 'created_at', 'updated_at')
+

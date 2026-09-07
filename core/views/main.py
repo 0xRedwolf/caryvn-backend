@@ -733,26 +733,96 @@ class AdminDashboardView(APIView):
             status__in=['canceled', 'cancelled', 'refunded', 'failed']
         )
         
-        total_orders = Order.objects.count()
-        total_revenue = valid_orders.aggregate(Sum('charge'))['charge__sum'] or 0
-        total_profit = valid_orders.aggregate(Sum('profit'))['profit__sum'] or 0
-        
-        pending_orders = Order.objects.filter(
+        smm_orders = Order.objects.count()
+        smm_revenue = valid_orders.aggregate(Sum('charge'))['charge__sum'] or Decimal('0.00')
+        smm_profit = valid_orders.aggregate(Sum('profit'))['profit__sum'] or Decimal('0.00')
+        smm_pending = Order.objects.filter(
             status__in=['pending', 'processing', 'in_progress']
         ).count()
         
-        # Today's stats
-        today_orders = Order.objects.filter(created_at__date=today).count()
-        today_metrics = valid_orders.filter(created_at__date=today).aggregate(
+        # Today's SMM stats
+        today_smm_orders = Order.objects.filter(created_at__date=today).count()
+        today_smm_metrics = valid_orders.filter(created_at__date=today).aggregate(
             revenue=Sum('charge'),
             profit=Sum('profit')
         )
-        
+        today_smm_revenue = today_smm_metrics['revenue'] or Decimal('0.00')
+        today_smm_profit = today_smm_metrics['profit'] or Decimal('0.00')
+
+        # Top SMM Services
+        top_smm_services_qs = (
+            valid_orders.values('service__name')
+            .annotate(count=Count('id'), total_charge=Sum('charge'), total_profit=Sum('profit'))
+            .order_by('-count')[:5]
+        )
+        top_smm_services = [
+            {
+                'name': s['service__name'] or 'Custom Service',
+                'orders_count': s['count'],
+                'revenue': str(s['total_charge'] or 0),
+                'profit': str(s['total_profit'] or 0),
+            }
+            for s in top_smm_services_qs
+        ]
+
+        # === OTP (Virtual Numbers) Stats ===
+        from ..models import OTPOrder, OTPProviderSetting
+        total_otp_orders = OTPOrder.objects.count()
+        otp_received_orders = OTPOrder.objects.filter(status='RECEIVED')
+        otp_revenue = otp_received_orders.aggregate(Sum('user_charge'))['user_charge__sum'] or Decimal('0.00')
+        otp_profit = otp_received_orders.aggregate(Sum('profit'))['profit__sum'] or Decimal('0.00')
+        otp_pending = OTPOrder.objects.filter(status='PENDING').count()
+        otp_canceled = OTPOrder.objects.filter(status='CANCELED').count()
+        otp_expired = OTPOrder.objects.filter(status='EXPIRED').count()
+
+        today_otp_orders = OTPOrder.objects.filter(created_at__date=today).count()
+        today_otp_received = otp_received_orders.filter(created_at__date=today)
+        today_otp_revenue = today_otp_received.aggregate(Sum('user_charge'))['user_charge__sum'] or Decimal('0.00')
+        today_otp_profit = today_otp_received.aggregate(Sum('profit'))['profit__sum'] or Decimal('0.00')
+        otp_success_rate = round((otp_received_orders.count() / total_otp_orders * 100), 1) if total_otp_orders > 0 else 0.0
+
+        # Data integrity: Ensure canceled/expired orders have 0 profit
+        from django.db.models import Case, When
+        OTPOrder.objects.filter(status__in=['CANCELED', 'EXPIRED']).exclude(profit=Decimal('0.00')).update(profit=Decimal('0.00'))
+
+        # Top OTP Services (only counting delivered/realized profit and revenue)
+        top_otp_services_qs = (
+            OTPOrder.objects.values('service_name')
+            .annotate(
+                count=Count('id'),
+                total_charge=Sum(
+                    Case(When(status='RECEIVED', then='user_charge'), default=Decimal('0.00'))
+                ),
+                total_profit=Sum(
+                    Case(When(status='RECEIVED', then='profit'), default=Decimal('0.00'))
+                )
+            )
+            .order_by('-count')[:5]
+        )
+        top_otp_services = [
+            {
+                'name': s['service_name'] or 'Virtual Number',
+                'orders_count': s['count'],
+                'revenue': str(s['total_charge'] or 0),
+                'profit': str(s['total_profit'] or 0),
+            }
+            for s in top_otp_services_qs
+        ]
+
+        # === Combined Totals (Multi-Service Platform Architecture) ===
+        combined_total_orders = smm_orders + total_otp_orders
+        combined_total_revenue = Decimal(str(smm_revenue)) + Decimal(str(otp_revenue))
+        combined_total_profit = Decimal(str(smm_profit)) + Decimal(str(otp_profit))
+        combined_pending_orders = smm_pending + otp_pending
+        combined_today_orders = today_smm_orders + today_otp_orders
+        combined_today_revenue = Decimal(str(today_smm_revenue)) + Decimal(str(today_otp_revenue))
+        combined_today_profit = Decimal(str(today_smm_profit)) + Decimal(str(today_otp_profit))
+
         pending_tickets = Ticket.objects.filter(
             status__in=['open', 'pending']
         ).count()
         
-        # Provider balances (all active providers) — cached for 2 minutes
+        # Provider balances (all active SMM providers + ZapOTP float) — cached for 2 minutes
         from django.core.cache import cache
         provider_balances = {}
         for prov in Provider.objects.filter(is_active=True):
@@ -768,17 +838,46 @@ class AdminDashboardView(APIView):
                         'name': prov.name,
                         'balance': bal.get('balance', 'N/A'),
                         'currency': prov.currency,
+                        'service_type': 'SMM',
                     }
                 except Exception:
                     entry = {
                         'name': prov.name,
                         'balance': 'N/A',
                         'currency': prov.currency,
+                        'service_type': 'SMM',
                     }
                 cache.set(cache_key, entry, 120)
                 provider_balances[prov.slug] = entry
         
-        # Keep legacy field for backwards compat
+        # ZapOTP Float Balance
+        z_setting = OTPProviderSetting.get_settings()
+        if z_setting.api_key:
+            cache_key_z = 'provider_balance_zapotp'
+            cached_z = cache.get(cache_key_z)
+            if cached_z is not None:
+                provider_balances['zapotp'] = cached_z
+            else:
+                try:
+                    from core.services.zapotp import ZapOTPClient
+                    zc = ZapOTPClient()
+                    zb = zc.get_balance()
+                    z_entry = {
+                        'name': 'ZapOTP (Virtual Numbers)',
+                        'balance': str(zb.get('balance', '0.00')),
+                        'currency': 'NGN',
+                        'service_type': 'OTP',
+                    }
+                except Exception:
+                    z_entry = {
+                        'name': 'ZapOTP (Virtual Numbers)',
+                        'balance': str(z_setting.cached_balance or '0.00'),
+                        'currency': 'NGN',
+                        'service_type': 'OTP',
+                    }
+                cache.set(cache_key_z, z_entry, 120)
+                provider_balances['zapotp'] = z_entry
+
         first_balance = next(iter(provider_balances.values()), {}).get('balance', 'N/A')
 
         # Total User Deposits & Total Balances
@@ -813,19 +912,46 @@ class AdminDashboardView(APIView):
         return Response({
             'total_users': total_users,
             'active_users_today': active_users_today,
-            'total_orders': total_orders,
-            'pending_orders': pending_orders,
-            'total_revenue': str(total_revenue),
-            'total_profit': str(total_profit),
-            'today_orders': today_orders,
-            'today_revenue': str(today_metrics['revenue'] or 0),
-            'today_profit': str(today_metrics['profit'] or 0),
+            # Combined Platform Financials
+            'total_orders': combined_total_orders,
+            'pending_orders': combined_pending_orders,
+            'total_revenue': str(combined_total_revenue),
+            'total_profit': str(combined_total_profit),
+            'today_orders': combined_today_orders,
+            'today_revenue': str(combined_today_revenue),
+            'today_profit': str(combined_today_profit),
             'pending_tickets': pending_tickets,
             'total_user_deposits': str(total_user_deposits),
             'total_user_balances': str(total_user_balances),
             'provider_balance': first_balance,
             'provider_balances': provider_balances,
             'active_users_ranked_today': active_users_ranked_today,
+            # SMM Dedicated Breakdown
+            'smm': {
+                'total_orders': smm_orders,
+                'pending_orders': smm_pending,
+                'revenue': str(smm_revenue),
+                'profit': str(smm_profit),
+                'today_orders': today_smm_orders,
+                'today_revenue': str(today_smm_revenue),
+                'today_profit': str(today_smm_profit),
+                'top_services': top_smm_services,
+            },
+            # OTP Dedicated Breakdown
+            'otp': {
+                'total_orders': total_otp_orders,
+                'received_orders': otp_received_orders.count(),
+                'pending_orders': otp_pending,
+                'canceled_orders': otp_canceled,
+                'expired_orders': otp_expired,
+                'success_rate': otp_success_rate,
+                'revenue': str(otp_revenue),
+                'profit': str(otp_profit),
+                'today_orders': today_otp_orders,
+                'today_revenue': str(today_otp_revenue),
+                'today_profit': str(today_otp_profit),
+                'top_services': top_otp_services,
+            },
         })
 
 
@@ -1546,13 +1672,24 @@ class AdminAllTransactionsView(APIView):
         if tx_status:
             qs = qs.filter(status=tx_status)
 
+        from django.db.models import Q
+        category = request.query_params.get('category', '').strip().lower()
+        if category in ('deposit', 'deposits'):
+            qs = qs.filter(type='deposit')
+        elif category in ('otp', 'virtual_numbers'):
+            qs = qs.filter(Q(description__icontains='virtual number') | Q(description__icontains='otp'))
+        elif category in ('smm', 'boosts'):
+            qs = qs.exclude(type='deposit').exclude(description__icontains='virtual number').exclude(description__icontains='otp')
+        elif category in ('refund', 'refunds'):
+            qs = qs.filter(Q(type='refund') | Q(description__icontains='refund'))
+
         search = request.query_params.get('search', '').strip()
         if search:
-            from django.db.models import Q
             qs = qs.filter(
                 Q(wallet__user__email__icontains=search) |
                 Q(wallet__user__username__icontains=search) |
-                Q(payment_reference__icontains=search)
+                Q(payment_reference__icontains=search) |
+                Q(description__icontains=search)
             )
 
         # Pagination
@@ -1747,6 +1884,12 @@ class SiteSettingsView(APIView):
             'crypto_enabled': settings.crypto_enabled,
             # Alerts
             'provider_balance_alert_threshold': str(getattr(settings, 'provider_balance_alert_threshold', '15.00')),
+            # Virtual Numbers / ZapOTP service toggle
+            'otp_service_enabled': getattr(
+                __import__('core.models', fromlist=['OTPProviderSetting']).OTPProviderSetting.get_settings(),
+                'is_active',
+                True
+            ),
         })
         
     def post(self, request):

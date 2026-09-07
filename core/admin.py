@@ -6,7 +6,7 @@ from django.contrib.auth.admin import UserAdmin as BaseUserAdmin
 from .models import (
     User, Wallet, Transaction, ServiceCategory, Service,
     MarkupRule, Order, Ticket, TicketReply, APILog, Provider,
-    PopupCard, Announcement
+    PopupCard, Announcement, OTPProviderSetting, OTPOrder
 )
 
 
@@ -241,4 +241,24 @@ class AnnouncementAdmin(admin.ModelAdmin):
     list_filter = ('is_active', 'color', 'is_ping')
     search_fields = ('text', 'link_url', 'link_text')
     list_editable = ('is_active', 'sort_order')
+
+
+@admin.register(OTPProviderSetting)
+class OTPProviderSettingAdmin(admin.ModelAdmin):
+    list_display = ('__str__', 'is_active', 'markup_percentage', 'min_margin', 'cached_balance', 'last_balance_check')
+    fieldsets = (
+        ('Provider Connection', {'fields': ('is_active', 'api_key', 'base_url')}),
+        ('Pricing Markup (Hybrid)', {'fields': ('markup_percentage', 'min_margin')}),
+        ('Float & Health Monitoring', {'fields': ('low_balance_threshold', 'cached_balance', 'last_balance_check')}),
+    )
+    readonly_fields = ('cached_balance', 'last_balance_check')
+
+
+@admin.register(OTPOrder)
+class OTPOrderAdmin(admin.ModelAdmin):
+    list_display = ('id', 'user', 'service_name', 'phone_number', 'status', 'sms_code', 'user_charge', 'profit', 'created_at')
+    list_filter = ('status', 'rental_type', 'country', 'created_at')
+    search_fields = ('id', 'provider_order_id', 'phone_number', 'service_name', 'user__email', 'sms_code')
+    readonly_fields = ('id', 'created_at', 'updated_at', 'received_at', 'refunded_at')
+
 
