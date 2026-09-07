@@ -1392,13 +1392,11 @@ class AdminPendingDepositsView(APIView):
 
     def get(self, request):
         from ..serializers import TransactionSerializer
-        # filter by all manual/crypto gateways
+        # filter by manual/crypto gateways (exclude automated gateways: squad, nexapay)
         transactions = Transaction.objects.select_related('wallet__user').filter(
             status=Transaction.Status.PENDING,
         ).exclude(
-            payment_gateway='squad'
-        ).exclude(
-            payment_gateway=''
+            payment_gateway__in=['squad', 'nexapay', '']
         ).order_by('created_at')
 
         data = []
@@ -1419,9 +1417,7 @@ class AdminPendingDepositsCountView(APIView):
         count = Transaction.objects.filter(
             status=Transaction.Status.PENDING,
         ).exclude(
-            payment_gateway='squad'
-        ).exclude(
-            payment_gateway=''
+            payment_gateway__in=['squad', 'nexapay', '']
         ).count()
 
         return Response({'count': count})
@@ -1444,16 +1440,34 @@ class AdminVerifyTransactionView(APIView):
         is_squad = (transaction.payment_gateway == 'squad' and bool(transaction.payment_reference))
         is_nexapay = (transaction.payment_gateway == 'nexapay' and bool(transaction.payment_reference))
 
-        # NexaPay gateway: requery & credit user
+        # NexaPay gateway: query NexaPay to verify if user actually paid before crediting
         if is_nexapay:
             try:
-                from ..services.nexapay import nexapay_service
-                requery_res = None
+                from ..services.nexapay import nexapay_service, NexaPayPaymentError
                 try:
                     requery_res = nexapay_service.requery_virtual_account(transaction.payment_reference)
+                except NexaPayPaymentError as e:
+                    return Response({'error': f'NexaPay gateway query failed: {str(e)}'}, status=status.HTTP_502_BAD_GATEWAY)
                 except Exception as e:
-                    logger.warning(f'NexaPay requery during admin verify: {e}')
+                    return Response({'error': f'Could not query NexaPay: {str(e)}'}, status=status.HTTP_502_BAD_GATEWAY)
 
+                status_str = str(requery_res.get('status', '')).upper()
+                data_dict = requery_res.get('data') if isinstance(requery_res.get('data'), dict) else {}
+                is_confirmed = requery_res.get('found') and (
+                    status_str in ('PAID', 'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'CREDITED', 'RECEIVED', 'FUNDED')
+                    or data_dict.get('isPaid') is True
+                    or data_dict.get('paid') is True
+                    or data_dict.get('status') in ('PAID', 'SUCCESS', 'SUCCESSFUL', 'COMPLETED', 'CREDITED')
+                )
+
+                if not is_confirmed:
+                    acc_status = requery_res.get('status') or 'NOT_PAID'
+                    return Response({
+                        'error': f'NexaPay verification failed: Account is not paid (Current status: {acc_status})',
+                        'gateway_details': requery_res,
+                    }, status=status.HTTP_400_BAD_REQUEST)
+
+                # Payment confirmed upstream! Credit the user
                 wallet = transaction.wallet
                 new_balance = wallet.confirm_deposit(transaction)
                 try:
@@ -1465,8 +1479,23 @@ class AdminVerifyTransactionView(APIView):
                 except Exception as e:
                     logger.warning(f'Topup success email failed (non-critical): {e}')
 
+                try:
+                    from ..services.audit_service import log_admin_action
+                    from ..models import AdminAuditLog
+                    log_admin_action(
+                        actor=request.user,
+                        action=AdminAuditLog.Action.BALANCE_ADJUSTMENT,
+                        target_model='Transaction',
+                        target_id=str(transaction.id),
+                        description=f"Admin verified NexaPay deposit of ₦{transaction.amount:,.2f} for {wallet.user.email}",
+                        changes={'credited_amount': str(transaction.amount), 'new_balance': str(new_balance), 'gateway': 'nexapay'},
+                        request=request
+                    )
+                except Exception as audit_err:
+                    logger.warning(f"Failed to record audit log on NexaPay verification: {audit_err}")
+
                 return Response({
-                    'message': 'NexaPay transaction verified and credited successfully',
+                    'message': 'NexaPay payment verified and credited successfully',
                     'new_balance': str(new_balance),
                     'credited_amount': str(transaction.amount),
                     'gateway_details': requery_res,
