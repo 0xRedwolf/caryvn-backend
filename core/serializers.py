@@ -282,13 +282,15 @@ class APILogSerializer(serializers.ModelSerializer):
 class AdminOrderSerializer(serializers.ModelSerializer):
     """Order serializer for admin with profit info."""
     user_email = serializers.CharField(source='user.email', read_only=True)
+    service_id = serializers.IntegerField(source='service.id', read_only=True, allow_null=True)
+    service_external_id = serializers.IntegerField(source='service.external_id', read_only=True, allow_null=True)
     service_name = serializers.SerializerMethodField()
     service_has_refill = serializers.BooleanField(source='service.has_refill', read_only=True)
     provider_name = serializers.CharField(source='provider.name', read_only=True, default='')
     
     class Meta:
         model = Order
-        fields = ('id', 'user_email', 'service_name', 'link', 'quantity',
+        fields = ('id', 'user_email', 'service_id', 'service_external_id', 'service_name', 'link', 'quantity',
                   'provider_rate', 'user_rate', 'charge', 'profit', 'status',
                   'provider_order_id', 'start_count', 'remains', 'source', 'created_at',
                   'service_has_refill', 'provider_name')
