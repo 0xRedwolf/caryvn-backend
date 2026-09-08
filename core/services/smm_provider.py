@@ -335,6 +335,98 @@ class SMMProvider:
         )
 
         return response
+
+    def cancel_order(self, order_id: str, user=None, order=None) -> Dict[str, Any]:
+        """
+        Request cancellation of an order from the provider.
+
+        Args:
+            order_id: Provider order ID
+            user: User requesting cancellation
+            order: Order object for logging
+
+        Returns:
+            Dict with 'success': bool, 'error': Optional[str], 'raw': Any
+        """
+        if not self.api_url or not self.api_key or self.api_key == 'demo-key':
+            return {'success': True, 'cancel': 'ok'}
+
+        response = self._make_request(
+            'cancel',
+            data={'order': order_id},
+            user=user,
+            order=order
+        )
+
+        return self._parse_cancel_response(response, order_id=order_id)
+
+    def cancel_orders(self, order_ids: List[str], user=None) -> Dict[str, Any]:
+        """
+        Request cancellation of multiple orders from the provider.
+
+        Args:
+            order_ids: List of provider order IDs
+            user: User requesting cancellation
+
+        Returns:
+            Dict with 'success': bool, 'results': list, 'raw': Any
+        """
+        if not order_ids:
+            return {'success': True, 'results': []}
+
+        if not self.api_url or not self.api_key or self.api_key == 'demo-key':
+            return {'success': True, 'results': [{'order': oid, 'cancel': 'ok'} for oid in order_ids]}
+
+        orders_str = ','.join(str(o) for o in order_ids)
+        response = self._make_request(
+            'cancel',
+            data={'orders': orders_str},
+            user=user
+        )
+
+        return self._parse_cancel_response(response, order_ids=order_ids)
+
+    def _parse_cancel_response(self, response: Any, order_id: str = None, order_ids: List[str] = None) -> Dict[str, Any]:
+        """Parse provider cancel responses according to SMM Panel API v2 standards."""
+        if not response or not isinstance(response, (dict, list)):
+            return {'success': False, 'error': 'Empty or invalid response from provider', 'raw': response}
+
+        # Check for top-level error: e.g. {"error": "Incorrect request"}
+        if isinstance(response, dict) and 'error' in response:
+            return {'success': False, 'error': str(response['error']), 'raw': response}
+
+        # Check for single dict response: e.g. {"cancel": "ok"} or {"cancel": {"error": "..."}}
+        if isinstance(response, dict) and 'cancel' in response:
+            cancel_val = response['cancel']
+            if cancel_val == 'ok':
+                return {'success': True, 'cancel': 'ok', 'raw': response}
+            elif isinstance(cancel_val, dict) and 'error' in cancel_val:
+                return {'success': False, 'error': str(cancel_val['error']), 'raw': response}
+            else:
+                return {'success': False, 'error': str(cancel_val), 'raw': response}
+
+        # Check for list response: e.g. [{"order": 1234, "cancel": "ok"}]
+        if isinstance(response, list):
+            has_success = False
+            first_error = None
+            for item in response:
+                if isinstance(item, dict):
+                    c = item.get('cancel')
+                    if c == 'ok':
+                        has_success = True
+                    elif isinstance(c, dict) and 'error' in c:
+                        first_error = first_error or str(c['error'])
+                    elif isinstance(c, str) and c.lower() != 'ok':
+                        first_error = first_error or c
+                    elif 'error' in item:
+                        first_error = first_error or str(item['error'])
+
+            if has_success:
+                return {'success': True, 'raw': response}
+            else:
+                return {'success': False, 'error': first_error or 'Provider rejected cancel request', 'raw': response}
+
+        return {'success': False, 'error': 'Unrecognized provider response format', 'raw': response}
     
     def _get_demo_services(self) -> List[Dict[str, Any]]:
         """Return demo services for development/testing."""

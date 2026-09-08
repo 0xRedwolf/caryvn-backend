@@ -1,16 +1,17 @@
 from django.utils import timezone
 from core.models import Order, Provider
 from core.services.smm_provider import get_provider_client, SMMProviderError
+from core.services.order_reconciliation import apply_order_status_sync, cancel_dead_pending_orders
 import logging
-import time
 
 logger = logging.getLogger(__name__)
 
 def sync_active_orders(provider_slug=None):
     """
     Syncs all pending/processing/in_progress orders with their respective SMM providers.
+    Handles automatic partial refunds, upstream cancellation refunds, and dead order cleanup.
     Optionally scoped to a single provider by slug.
-    Returns a dict with updated count and error count.
+    Returns a dict with updated count, error count, and cleaned dead order count.
     """
     orders = Order.objects.filter(
         provider_order_id__isnull=False,
@@ -19,7 +20,7 @@ def sync_active_orders(provider_slug=None):
             Order.Status.PROCESSING,
             Order.Status.IN_PROGRESS
         ]
-    ).exclude(provider_order_id='').select_related('provider')
+    ).exclude(provider_order_id='').select_related('provider', 'user', 'user__wallet')
     
     # Optionally filter by provider
     if provider_slug:
@@ -27,25 +28,12 @@ def sync_active_orders(provider_slug=None):
     
     updated = 0
     errors = 0
-    
-    status_map = {
-        'pending': Order.Status.PENDING,
-        'processing': Order.Status.PROCESSING,
-        'in progress': Order.Status.IN_PROGRESS,
-        'completed': Order.Status.COMPLETED,
-        'partial': Order.Status.PARTIAL,
-        'canceled': Order.Status.CANCELED,
-        'cancelled': Order.Status.CANCELED,
-        'refunded': Order.Status.REFUNDED,
-        'failed': Order.Status.FAILED,
-    }
 
     # Cache provider clients to avoid recreating for each order
     _client_cache = {}
 
     for order in orders:
         try:
-            # Get or create client for this order's provider
             provider = order.provider
             if not provider:
                 errors += 1
@@ -60,45 +48,26 @@ def sync_active_orders(provider_slug=None):
             )
             
             if 'status' in result:
-                provider_status = result['status'].lower()
-                new_status = status_map.get(provider_status)
-                
-                if new_status and order.status != new_status:
-                    order.status = new_status
-                    
-                    if 'remains' in result and result['remains']:
-                        order.remains = int(result['remains'])
-                    if 'start_count' in result and result['start_count']:
-                        order.start_count = int(result['start_count'])
-                        
-                    if new_status == Order.Status.COMPLETED:
-                        order.completed_at = timezone.now()
-                        
-                    order.save()
+                old_status = order.status
+                old_remains = order.remains
+                apply_order_status_sync(order, result)
+                if order.status != old_status or order.remains != old_remains:
                     updated += 1
-
-                    # Send milestone email notification on completion/partial/cancellation
-                    if new_status in (Order.Status.COMPLETED, Order.Status.PARTIAL, Order.Status.CANCELED, Order.Status.REFUNDED):
-                        try:
-                            from core.services.email_service import email_service
-                            status_label = {
-                                Order.Status.COMPLETED: 'Completed',
-                                Order.Status.PARTIAL: 'Partial Delivery',
-                                Order.Status.CANCELED: 'Canceled',
-                                Order.Status.REFUNDED: 'Refunded',
-                            }.get(new_status, new_status.title())
-                            email_service.send_order_status_email(order, status_label)
-                        except Exception as em_err:
-                            logger.warning(f'Failed to send order status milestone email for order {order.id}: {em_err}')
-                else:
-                    if 'remains' in result and result['remains']:
-                        remains = int(result['remains'])
-                        if order.remains != remains:
-                            order.remains = remains
-                            order.save(update_fields=['remains'])
         
         except Exception as e:
             logger.error(f'Failed to sync order {order.id}: {e}', exc_info=True)
             errors += 1
-            
-    return {'updated': updated, 'errors': errors}
+
+    # Safety Watchdog: clean up any dead pending orders (>15m unsubmitted)
+    dead_summary = {'canceled': 0}
+    try:
+        dead_summary = cancel_dead_pending_orders(max_age_minutes=15)
+    except Exception as w_err:
+        logger.error(f'Failed running dead order watchdog: {w_err}', exc_info=True)
+
+    return {
+        'updated': updated,
+        'errors': errors,
+        'dead_orders_cleaned': dead_summary.get('canceled', 0),
+    }
+

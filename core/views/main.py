@@ -446,31 +446,9 @@ class OrderDetailView(APIView):
         return Response(OrderDetailSerializer(order).data)
     
     def _update_order_status(self, order, status_result):
-        """Update order from provider status response."""
-        status_map = {
-            'pending': Order.Status.PENDING,
-            'processing': Order.Status.PROCESSING,
-            'in progress': Order.Status.IN_PROGRESS,
-            'completed': Order.Status.COMPLETED,
-            'partial': Order.Status.PARTIAL,
-            'canceled': Order.Status.CANCELED,
-            'cancelled': Order.Status.CANCELED,
-            'refunded': Order.Status.REFUNDED,
-        }
-        
-        provider_status = status_result.get('status', '').lower()
-        if provider_status in status_map:
-            order.status = status_map[provider_status]
-        
-        if 'start_count' in status_result:
-            order.start_count = int(status_result['start_count']) if status_result['start_count'] else None
-        if 'remains' in status_result:
-            order.remains = int(status_result['remains']) if status_result['remains'] else None
-        
-        if order.status == Order.Status.COMPLETED:
-            order.completed_at = timezone.now()
-        
-        order.save()
+        """Reconcile order from provider status response with automatic refunds."""
+        from ..services.order_reconciliation import apply_order_status_sync
+        return apply_order_status_sync(order, status_result)
 
 
 class OrderRefillView(APIView):
@@ -1153,34 +1131,77 @@ class AdminSyncOrdersView(APIView):
 
 
 class AdminOrderCancelRefundView(APIView):
-    """Cancel orders and refund wallet balance."""
+    """Cancel orders and refund wallet balance with upstream provider cancellation verification."""
     permission_classes = [permissions.IsAdminUser]
-    
+
     def post(self, request):
         order_ids = request.data.get('order_ids', [])
+        force = bool(request.data.get('force', False))
         if not order_ids:
             return Response({'error': 'No order IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
-        
+
+        from ..services.smm_provider import get_provider_client
+        from ..services.order_reconciliation import _order_has_refund
+
+        # If a single order is being canceled without force, check upstream provider first
+        if len(order_ids) == 1 and not force:
+            try:
+                order = Order.objects.select_related('provider', 'user', 'user__wallet').get(id=order_ids[0])
+                if order.status in ('completed', 'canceled', 'refunded'):
+                    return Response({'error': f'Order is already {order.status}'}, status=status.HTTP_400_BAD_REQUEST)
+
+                if order.provider_order_id and order.provider:
+                    client = get_provider_client(order.provider)
+                    cancel_res = client.cancel_order(order.provider_order_id, user=request.user, order=order)
+                    if not cancel_res.get('success'):
+                        return Response({
+                            'upstream_rejected': True,
+                            'can_force': True,
+                            'order_id': str(order.id),
+                            'provider_order_id': order.provider_order_id,
+                            'provider_name': order.provider.name,
+                            'error': cancel_res.get('error', 'Provider rejected cancellation request'),
+                        }, status=status.HTTP_400_BAD_REQUEST)
+            except Order.DoesNotExist:
+                return Response({'error': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
+
         results = {'refunded': 0, 'skipped': 0, 'errors': []}
-        
+
         for oid in order_ids:
             try:
-                order = Order.objects.get(id=oid)
+                order = Order.objects.select_related('provider', 'user', 'user__wallet').get(id=oid)
                 if order.status in ('completed', 'canceled', 'refunded'):
                     results['skipped'] += 1
                     continue
-                wallet = order.user.wallet
-                wallet.refund(order.charge, f'Admin refund: Order #{str(order.id)[:8]}')
-                order.status = Order.Status.CANCELED
-                order.save()
-                results['refunded'] += 1
+
+                upstream_note = 'No upstream provider'
+                if order.provider_order_id and order.provider:
+                    if not force:
+                        client = get_provider_client(order.provider)
+                        cancel_res = client.cancel_order(order.provider_order_id, user=request.user, order=order)
+                        if not cancel_res.get('success'):
+                            err = cancel_res.get('error', 'Provider rejected cancel')
+                            results['errors'].append(f"Order #{str(order.id)[:8]}: Upstream rejected cancel ({err})")
+                            continue
+                        upstream_note = 'Upstream provider confirmed cancellation'
+                    else:
+                        upstream_note = 'Admin force-canceled without upstream confirmation'
+
+                refund_amount = order.charge
+                with transaction.atomic():
+                    if not _order_has_refund(order) and refund_amount > Decimal('0'):
+                        order.user.wallet.refund(refund_amount, f'Admin refund: Order #{str(order.id)[:8]}')
+                    order.status = Order.Status.CANCELED
+                    order.profit = Decimal('0')
+                    order.save()
+                    results['refunded'] += 1
 
                 try:
                     from ..services.email_service import email_service
                     email_service.send_order_status_email(
                         order,
                         status_display='Canceled & Refunded',
-                        refund_amount=order.charge
+                        refund_amount=refund_amount
                     )
                 except Exception as em_err:
                     logger.warning(f'Failed to send refund email for order {order.id}: {em_err}')
@@ -1193,17 +1214,18 @@ class AdminOrderCancelRefundView(APIView):
                         action=AdminAuditLog.Action.ORDER_STATUS_OVERRIDE,
                         target_model='Order',
                         target_id=str(order.id),
-                        description=f"Admin refunded order #{str(order.id)[:8]} (₦{order.charge})",
-                        changes={'status': 'canceled', 'refund_amount': str(order.charge)},
+                        description=f"Admin canceled order #{str(order.id)[:8]} (₦{refund_amount}) - {upstream_note}",
+                        changes={'status': 'canceled', 'refund_amount': str(refund_amount), 'force': force},
                         request=request
                     )
                 except Exception as audit_err:
                     logger.warning(f'Failed to log audit for order refund: {audit_err}')
+
             except Order.DoesNotExist:
                 results['errors'].append(f'Order {oid} not found')
             except Exception as e:
                 results['errors'].append(f'Order {str(oid)[:8]}: {str(e)}')
-        
+
         return Response(results)
 
 

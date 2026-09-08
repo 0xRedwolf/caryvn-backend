@@ -769,6 +769,28 @@ def assign_reseller_order_id(sender, instance, created, **kwargs):
         Order.objects.filter(pk=instance.pk).update(reseller_order_id=seq)
         instance.reseller_order_id = seq
 
+
+@receiver(post_save, sender=Order)
+def auto_resolve_order_admin_notifications(sender, instance, **kwargs):
+    """When an order reaches a terminal state (completed, canceled, refunded), auto-mark its admin alerts as read."""
+    if instance.status in (Order.Status.COMPLETED, Order.Status.CANCELED, Order.Status.REFUNDED):
+        from django.db.models import Q
+        short_id = str(instance.id)[:8]
+        AdminNotification.objects.filter(
+            Q(data__order_id=str(instance.id)) | Q(title__icontains=short_id),
+            is_read=False,
+        ).update(is_read=True)
+
+
+@receiver(post_delete, sender=Order)
+def auto_delete_order_admin_notifications(sender, instance, **kwargs):
+    """When an order is deleted, clean up its admin alerts."""
+    from django.db.models import Q
+    short_id = str(instance.id)[:8]
+    AdminNotification.objects.filter(
+        Q(data__order_id=str(instance.id)) | Q(title__icontains=short_id)
+    ).delete()
+
 class PopupCard(models.Model):
     """Announcement or Ad cards displayed on the user dashboard."""
     

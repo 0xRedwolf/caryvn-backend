@@ -570,28 +570,6 @@ class ResellerAPIView(APIView):
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _update_order_status(order: Order, status_result: dict):
-    """Update an Order instance from a provider status response dict."""
-    STATUS_MAP = {
-        'pending': Order.Status.PENDING,
-        'processing': Order.Status.PROCESSING,
-        'in progress': Order.Status.IN_PROGRESS,
-        'completed': Order.Status.COMPLETED,
-        'partial': Order.Status.PARTIAL,
-        'canceled': Order.Status.CANCELED,
-        'cancelled': Order.Status.CANCELED,
-        'refunded': Order.Status.REFUNDED,
-    }
-
-    provider_status = status_result.get('status', '').lower()
-    if provider_status in STATUS_MAP:
-        order.status = STATUS_MAP[provider_status]
-
-    if 'start_count' in status_result:
-        order.start_count = int(status_result['start_count']) if status_result['start_count'] else None
-    if 'remains' in status_result:
-        order.remains = int(status_result['remains']) if status_result['remains'] else None
-
-    if order.status == Order.Status.COMPLETED:
-        order.completed_at = timezone.now()
-
-    order.save()
+    """Reconcile Order instance from a provider status response dict with automatic refunds."""
+    from core.services.order_reconciliation import apply_order_status_sync
+    return apply_order_status_sync(order, status_result)

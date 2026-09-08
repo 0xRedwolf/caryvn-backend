@@ -27,6 +27,11 @@ app.conf.beat_schedule = {
         'task': 'core.tasks.sync_orders_task',
         'schedule': 5 * 60,  # Every 5 minutes
     },
+    # Watchdog: cancel and refund dead orders stuck in pending >15m — every 5 minutes
+    'cancel-dead-pending-orders-every-5-min': {
+        'task': 'core.tasks.cancel_dead_pending_orders_task',
+        'schedule': 5 * 60,  # Every 5 minutes
+    },
     # Sync the service catalogue from providers — every 6 hours
     'sync-services-every-6-hours': {
         'task': 'core.tasks.sync_services_task',
@@ -36,6 +41,11 @@ app.conf.beat_schedule = {
     'check-provider-balances-every-15-min': {
         'task': 'core.tasks.check_provider_balances_task',
         'schedule': 15 * 60,  # Every 15 minutes
+    },
+    # Watchdog: safe timeout cancellation for stuck upstream orders — every 30 minutes
+    'stuck-upstream-orders-every-30-min': {
+        'task': 'core.tasks.stuck_upstream_order_watchdog_task',
+        'schedule': 30 * 60,  # Every 30 minutes
     },
 }
 app.conf.timezone = 'UTC'

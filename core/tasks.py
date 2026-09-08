@@ -113,21 +113,29 @@ def submit_order_to_provider(self, order_id: str, comments=None):
 def retry_stuck_orders_task():
     """
     Safety net: find PENDING orders that were never submitted to the provider
-    (no provider_order_id) and are older than 2 minutes, then submit them now.
+    (no provider_order_id) between 2 and 15 minutes old, then submit them now.
 
     This catches orders where the on_commit Celery dispatch silently failed
     (e.g. Redis blip, worker restart during deploy, etc.).
+    Orders older than 15 minutes are picked up by cancel_dead_pending_orders_task.
     """
     from django.utils import timezone
     from datetime import timedelta
+    from django.db.models import Q
     from core.models import Order
 
-    cutoff = timezone.now() - timedelta(minutes=2)
-    stuck_orders = Order.objects.filter(
-        status=Order.Status.PENDING,
-        provider_order_id__isnull=True,
-        created_at__lte=cutoff,
-    ).exclude(provider_order_id='').values_list('id', flat=True)
+    now = timezone.now()
+    min_age = now - timedelta(minutes=2)
+    max_age = now - timedelta(minutes=15)
+    stuck_orders = (
+        Order.objects.filter(
+            status=Order.Status.PENDING,
+            created_at__lte=min_age,
+            created_at__gte=max_age,
+        )
+        .filter(Q(provider_order_id__isnull=True) | Q(provider_order_id=''))
+        .values_list('id', flat=True)
+    )
 
     count = 0
     for order_id in stuck_orders:
@@ -137,6 +145,34 @@ def retry_stuck_orders_task():
     if count:
         logger.info(f'retry_stuck_orders_task: re-queued {count} stuck pending orders.')
     return {'requeued': count}
+
+
+@shared_task(name='core.tasks.cancel_dead_pending_orders_task')
+def cancel_dead_pending_orders_task():
+    """
+    Safety watchdog: find PENDING orders older than 15 minutes that were never submitted
+    to any provider (empty provider_order_id), cancel them and issue a 100% wallet refund.
+    """
+    from core.services.order_reconciliation import cancel_dead_pending_orders
+
+    result = cancel_dead_pending_orders(max_age_minutes=15)
+    if result.get('canceled', 0) > 0:
+        logger.warning(f"cancel_dead_pending_orders_task: canceled & refunded {result['canceled']} dead orders.")
+    return result
+
+
+@shared_task(name='core.tasks.stuck_upstream_order_watchdog_task')
+def stuck_upstream_order_watchdog_task():
+    """
+    Periodic watchdog for orders that reached the upstream provider but have been
+    stuck in PENDING (>1h) or PROCESSING (>4h).
+    Attempts safe upstream cancellation; alerts admin if rejected.
+    """
+    from core.services.order_reconciliation import stuck_upstream_order_watchdog
+
+    result = stuck_upstream_order_watchdog(pending_timeout_hours=1, processing_timeout_hours=4)
+    logger.info(f"stuck_upstream_order_watchdog_task complete: {result}")
+    return result
 
 
 @shared_task(name='core.tasks.sync_orders_task')
