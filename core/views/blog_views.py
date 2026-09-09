@@ -93,9 +93,31 @@ class PublicBlogDetailView(APIView):
                 status=status.HTTP_404_NOT_FOUND,
             )
 
-        # Atomic view count increment
-        BlogPost.objects.filter(pk=post.pk).update(views_count=F('views_count') + 1)
-        post.refresh_from_db(fields=['views_count'])
+        # Unique reader deduplication (24-hour rolling window per visitor)
+        # 1. Skip staff/admin previews so authoring does not inflate view counts
+        is_staff = request.user.is_authenticated and (request.user.is_staff or request.user.is_superuser)
+        ua = request.META.get('HTTP_USER_AGENT', '').lower()
+        is_bot = any(b in ua for b in ('bot', 'spider', 'crawler', 'scraper', 'facebookexternalhit', 'whatsapp'))
+
+        if not is_staff and not is_bot:
+            import hashlib
+            from django.core.cache import cache
+
+            # Resolve real visitor IP (respecting reverse proxy headers)
+            x_forwarded_for = request.META.get('HTTP_X_FORWARDED_FOR')
+            if x_forwarded_for:
+                ip = x_forwarded_for.split(',')[0].strip()
+            else:
+                ip = request.META.get('REMOTE_ADDR', '')
+
+            visitor_fingerprint = f"{ip}:{ua[:80]}"
+            visitor_hash = hashlib.sha256(visitor_fingerprint.encode('utf-8')).hexdigest()[:16]
+            cache_key = f"blog_view_{post.id}_{visitor_hash}"
+
+            # cache.add returns True ONLY if key did not already exist (atomic check-and-set)
+            if cache.add(cache_key, 1, timeout=86400):
+                BlogPost.objects.filter(pk=post.pk).update(views_count=F('views_count') + 1)
+                post.refresh_from_db(fields=['views_count'])
 
         serializer = BlogPostDetailSerializer(post)
         data = serializer.data

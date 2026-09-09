@@ -371,6 +371,10 @@ class BlogPostListSerializer(serializers.ModelSerializer):
 class BlogPostDetailSerializer(serializers.ModelSerializer):
     author = BlogAuthorSerializer(read_only=True)
     category = BlogCategorySerializer(read_only=True)
+    author_name = serializers.CharField(source='author.name', read_only=True, default='Admin')
+    author_avatar = serializers.CharField(source='author.avatar_url', read_only=True, default='')
+    category_name = serializers.CharField(source='category.name', read_only=True, default='General')
+    category_slug = serializers.CharField(source='category.slug', read_only=True, default='general')
     author_id = serializers.UUIDField(write_only=True, required=False, allow_null=True)
     category_id = serializers.UUIDField(write_only=True, required=False, allow_null=True)
 
@@ -378,7 +382,8 @@ class BlogPostDetailSerializer(serializers.ModelSerializer):
         model = BlogPost
         fields = (
             'id', 'title', 'slug', 'excerpt', 'content', 'featured_image',
-            'author', 'category', 'author_id', 'category_id',
+            'author', 'category', 'author_name', 'author_avatar', 'category_name', 'category_slug',
+            'author_id', 'category_id',
             'status', 'featured', 'read_time', 'views_count',
             'published_at', 'created_at', 'updated_at',
             'seo_title', 'seo_description', 'canonical_url', 'focus_keyword',
