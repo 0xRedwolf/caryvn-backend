@@ -1047,10 +1047,6 @@ class OTPOrder(models.Model):
         EXPIRED = 'EXPIRED', 'Expired (Auto-Refunded)'
         REFUNDED = 'REFUNDED', 'Refunded'
 
-    class RentalType(models.TextChoices):
-        SHORT = 'short', 'Short-Term (Single OTP)'
-        LONG = 'long', 'Long-Term (3-30 Days)'
-
     id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE, related_name='otp_orders')
     
@@ -1061,8 +1057,6 @@ class OTPOrder(models.Model):
     service_id = models.CharField(max_length=100, help_text="ZapOTP service identifier (e.g. whatsapp)")
     service_name = models.CharField(max_length=150, help_text="Display service name (e.g. WhatsApp)")
     provider = models.CharField(max_length=50, default='global', help_text="ZapOTP provider pool")
-    rental_type = models.CharField(max_length=20, choices=RentalType.choices, default=RentalType.SHORT)
-    rental_days = models.IntegerField(default=0, help_text="Rental days if long-term")
 
     # Financial & Ledger Details (NGN)
     provider_cost = models.DecimalField(max_digits=12, decimal_places=2, help_text="Cost charged by ZapOTP in NGN")
@@ -1073,6 +1067,7 @@ class OTPOrder(models.Model):
     status = models.CharField(max_length=20, choices=Status.choices, default=Status.PENDING, db_index=True)
     sms_code = models.CharField(max_length=50, blank=True, null=True, help_text="Extracted verification code")
     full_sms = models.TextField(blank=True, default='', help_text="Full received SMS text body")
+    sms_messages = models.JSONField(default=list, blank=True, help_text="List of received SMS messages")
     
     # Time Tracking & Auto-Expiry
     expires_at = models.DateTimeField(db_index=True, help_text="When order expires and becomes eligible for auto-refund")

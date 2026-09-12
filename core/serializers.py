@@ -306,7 +306,7 @@ class AdminUserSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = User
-        fields = ('id', 'email', 'first_name', 'last_name', 'balance',
+        fields = ('id', 'username', 'email', 'first_name', 'last_name', 'balance',
                   'is_active', 'is_staff', 'total_orders', 'total_spent', 'date_joined')
     
     def get_total_orders(self, obj):
@@ -410,8 +410,8 @@ class OTPOrderSerializer(serializers.ModelSerializer):
         model = OTPOrder
         fields = (
             'id', 'phone_number', 'country', 'service_id', 'service_name',
-            'provider', 'rental_type', 'rental_days', 'user_charge',
-            'status', 'formatted_status', 'sms_code', 'full_sms',
+            'provider', 'user_charge',
+            'status', 'formatted_status', 'sms_code', 'full_sms', 'sms_messages',
             'expires_at', 'received_at', 'refunded_at', 'created_at'
         )
         read_only_fields = fields
@@ -427,9 +427,9 @@ class OTPOrderAdminSerializer(serializers.ModelSerializer):
         fields = (
             'id', 'user_email', 'user_username', 'provider_order_id',
             'phone_number', 'country', 'service_id', 'service_name',
-            'provider', 'rental_type', 'rental_days',
+            'provider',
             'provider_cost', 'user_charge', 'profit',
-            'status', 'formatted_status', 'sms_code', 'full_sms',
+            'status', 'formatted_status', 'sms_code', 'full_sms', 'sms_messages',
             'expires_at', 'received_at', 'refunded_at', 'created_at'
         )
         read_only_fields = fields

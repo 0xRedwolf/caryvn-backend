@@ -179,42 +179,6 @@ class ZapOTPClient:
             "expiry": data.get("expiry"),
         }
 
-    def rent_long_number(self, service: str, country: str = "US", days: int = 3, provider: str = "usa_long", area: Optional[str] = None) -> Dict[str, Any]:
-        """
-        Rent a long-term virtual number (3 to 30 days).
-        Endpoint: POST /rent
-        Payload: {
-            "action": "rent",
-            "provider": "usa_long",
-            "service": "ALL_SERVICES",
-            "days": "3",
-            "country": "US"
-        }
-        """
-        payload = {
-            "action": "rent",
-            "provider": provider,
-            "service": service or "ALL_SERVICES",
-            "days": str(days),
-            "country": country.upper()
-        }
-        if area:
-            payload["area"] = str(area)
-
-        res = self._request("POST", "rent", json_data=payload)
-        data = res.get("data", {})
-        
-        if not data.get("number") or not data.get("order_id"):
-            raise ZapOTPError("ZapOTP did not return a valid long-term phone number.")
-
-        return {
-            "order_id": str(data.get("order_id")),
-            "number": str(data.get("number")),
-            "price": Decimal(str(data.get("price", 0.00))),
-            "expiry": data.get("expiry"),
-            "days": days
-        }
-
     def get_sms(self, order_id: str) -> Dict[str, Any]:
         """
         Poll status and incoming SMS for a specific rented order.

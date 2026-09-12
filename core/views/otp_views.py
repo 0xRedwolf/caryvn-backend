@@ -107,8 +107,6 @@ class OTPRentNumberView(APIView):
         "service": "whatsapp",
         "service_name": "WhatsApp",
         "provider": "global",
-        "rental_type": "short" | "long",
-        "days": 3 (if long),
         "pool": "1" (optional)
     }
     """
@@ -126,9 +124,7 @@ class OTPRentNumberView(APIView):
         country = data.get('country', 'US').upper()
         service_id = data.get('service', '').strip()
         service_name = data.get('service_name', service_id.capitalize())
-        rental_type = data.get('rental_type', OTPOrder.RentalType.SHORT)
-        provider = data.get('provider', 'usa_long' if rental_type == OTPOrder.RentalType.LONG else 'global')
-        rental_days = int(data.get('days', 0)) if rental_type == OTPOrder.RentalType.LONG else 0
+        provider = data.get('provider', 'global')
         pool = data.get('pool')
 
         if not service_id:
@@ -161,10 +157,6 @@ class OTPRentNumberView(APIView):
                 provider_cost = Decimal('450.00')
         except Exception as e:
             logger.warning(f"Could not verify price upstream before rent, using fallback: {e}")
-        # Scale cost for long-term duration (base cost is for 3 days)
-        if rental_type == OTPOrder.RentalType.LONG and rental_days > 0:
-            duration_mult = Decimal(str(max(1.0, float(rental_days) / 3.0)))
-            provider_cost = provider_cost * duration_mult
 
         user_charge = setting.calculate_price(provider_cost)
 
@@ -189,26 +181,33 @@ class OTPRentNumberView(APIView):
 
         # 4. Dispatch ZapOTP upstream rental
         try:
-            if rental_type == OTPOrder.RentalType.LONG:
-                rent_res = client.rent_long_number(
-                    service=service_id,
-                    country=country,
-                    days=rental_days or 3,
-                    provider="usa_long"
-                )
-            else:
-                rent_res = client.rent_number(
-                    country=country,
-                    service=service_id,
-                    provider=provider,
-                    pool=pool
-                )
+            rent_res = client.rent_number(
+                country=country,
+                service=service_id,
+                provider=provider,
+                pool=pool
+            )
         except ZapOTPError as e:
-            # Immediate atomic refund on upstream failure!
+            # Immediate atomic refund on upstream failure
             logger.warning(f"ZapOTP rent failed for user {request.user.email}, auto-refunding: {e}")
-            wallet.refund(user_charge, description=f"Refund: Failed to reserve {service_name} number")
+            wallet.refund(user_charge, description=f"Refund: Service temporarily unavailable for {service_name}")
+
+            # Check if error is due to low provider balance and notify admin internally
+            if any(w in str(e).lower() for w in ('balance', 'funds', 'credit', 'not enough')):
+                try:
+                    from core.models import AdminNotification
+                    AdminNotification.objects.create(
+                        notification_type=AdminNotification.NotificationType.LOW_PROVIDER_BALANCE,
+                        severity=AdminNotification.Severity.CRITICAL,
+                        title="ZapOTP Float Depleted",
+                        message=f"A customer order failed because your ZapOTP account balance is low: '{str(e)}'. Please top up ZapOTP float immediately.",
+                        data={'service': service_name, 'country': country}
+                    )
+                except Exception:
+                    pass
+
             return Response(
-                {"detail": f"Failed to acquire number from provider: {str(e)}. Your wallet has been 100% refunded."},
+                {"detail": "This service is temporarily unavailable or out of stock for this country. Your wallet has been 100% refunded. Please try another route or country."},
                 status=status.HTTP_502_BAD_GATEWAY
             )
         except Exception as e:
@@ -224,8 +223,6 @@ class OTPRentNumberView(APIView):
         if not upstream_price or Decimal(str(upstream_price)) <= Decimal('0.00'):
             upstream_price = provider_cost
         expires_at = timezone.now() + timedelta(minutes=15)
-        if rental_type == OTPOrder.RentalType.LONG and rental_days > 0:
-            expires_at = timezone.now() + timedelta(days=rental_days)
 
         profit = max(Decimal('0.00'), user_charge - upstream_price)
 
@@ -237,13 +234,12 @@ class OTPRentNumberView(APIView):
             service_id=service_id,
             service_name=service_name,
             provider=provider,
-            rental_type=rental_type,
-            rental_days=rental_days,
             provider_cost=upstream_price,
             user_charge=user_charge,
             profit=profit,
             status=OTPOrder.Status.PENDING,
-            expires_at=expires_at
+            expires_at=expires_at,
+            sms_messages=[]
         )
 
         serializer = OTPOrderSerializer(order)
