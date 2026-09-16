@@ -56,7 +56,9 @@ from .views.otp_views import (
     OTPOrderCancelView, OTPOrderHistoryView, OTPStatusView
 )
 from .views.admin_otp_views import (
-    AdminOTPSettingView, AdminOTPBalanceView, AdminOTPOrdersView
+    AdminOTPSettingView, AdminOTPBalanceView, AdminOTPOrdersView,
+    AdminOTPSyncOrderView, AdminOTPCancelRefundView,
+    AdminOTPCompleteOrderView, AdminOTPDeleteOrderView
 )
 
 urlpatterns = [
@@ -208,6 +210,10 @@ urlpatterns = [
     path('admin/otp/settings/', AdminOTPSettingView.as_view(), name='admin-otp-settings'),
     path('admin/otp/balance/', AdminOTPBalanceView.as_view(), name='admin-otp-balance'),
     path('admin/otp/orders/', AdminOTPOrdersView.as_view(), name='admin-otp-orders'),
+    path('admin/otp/orders/<uuid:pk>/sync/', AdminOTPSyncOrderView.as_view(), name='admin-otp-order-sync'),
+    path('admin/otp/orders/<uuid:pk>/cancel/', AdminOTPCancelRefundView.as_view(), name='admin-otp-order-cancel'),
+    path('admin/otp/orders/<uuid:pk>/complete/', AdminOTPCompleteOrderView.as_view(), name='admin-otp-order-complete'),
+    path('admin/otp/orders/<uuid:pk>/delete/', AdminOTPDeleteOrderView.as_view(), name='admin-otp-order-delete'),
 ]
 
 

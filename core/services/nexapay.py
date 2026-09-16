@@ -205,10 +205,10 @@ class NexaPayPaymentService:
         headers = self._get_headers('api_key')
         last_error = ''
 
-        # Base URL candidates: documentation states https://api.nexapay.ng/api/v1
+        # Base URL candidates: official documented base URL is https://api.nexapay.ng/api/v1/business
         base_candidates = [
-            'https://api.nexapay.ng/api/v1',
             self.base_url,
+            'https://api.nexapay.ng/api/v1',
         ]
         # De-duplicate base candidates while preserving order
         seen_bases = set()
@@ -221,11 +221,11 @@ class NexaPayPaymentService:
 
         attempts = []
 
-        # Step 1: Query transactions list endpoints
+        # Step 1: Query transactions list endpoints (businessId param required by NexaPay to route merchant)
         for base in clean_bases:
             tx_urls = [
-                f'{base}/transactions?limit=100',
                 f'{base}/transactions?businessId={business_id}&limit=100' if business_id else None,
+                f'{base}/transactions?limit=100',
             ]
             for tx_url in tx_urls:
                 if not tx_url:
@@ -271,8 +271,8 @@ class NexaPayPaymentService:
         # Step 2: Query single transaction details by reference / ID
         for base in clean_bases:
             detail_urls = [
-                f'{base}/transactions/{ref_clean}',
                 f'{base}/transactions/{ref_clean}?businessId={business_id}' if business_id else None,
+                f'{base}/transactions/{ref_clean}',
             ]
             for detail_url in detail_urls:
                 if not detail_url:

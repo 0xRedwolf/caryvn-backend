@@ -294,17 +294,18 @@ class OTPOrderPollSMSView(APIView):
         except ZapOTPError as e:
             return Response({"detail": str(e)}, status=status.HTTP_502_BAD_GATEWAY)
 
-        upstream_status = sms_data.get('status', 'PENDING')
+        upstream_status = str(sms_data.get('status', 'PENDING')).upper().strip()
         sms_code = sms_data.get('sms_code')
-        full_sms = sms_data.get('full_sms', '')
+        full_sms = str(sms_data.get('full_sms', '')).strip()
 
-        if upstream_status == 'RECEIVED' and sms_code:
+        # Handle SMS Received / Finished / Delivered
+        if (upstream_status in ['RECEIVED', 'FINISHED', 'SUCCESS', 'COMPLETED'] and (sms_code or full_sms)) or (sms_code and len(str(sms_code).strip()) >= 3):
             order.status = OTPOrder.Status.RECEIVED
-            order.sms_code = sms_code
-            order.full_sms = full_sms
+            order.sms_code = str(sms_code).strip() if sms_code else (full_sms[:50] if full_sms else 'DELIVERED')
+            order.full_sms = full_sms or str(sms_code or '')
             order.received_at = timezone.now()
             order.save(update_fields=['status', 'sms_code', 'full_sms', 'received_at', 'updated_at'])
-        elif upstream_status in ['CANCELED', 'CANCELLED']:
+        elif upstream_status in ['CANCELED', 'CANCELLED'] and not sms_code:
             order.status = OTPOrder.Status.CANCELED
             order.profit = Decimal('0.00')
             order.refunded_at = timezone.now()
@@ -340,7 +341,33 @@ class OTPOrderCancelView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Enforce 2-minute grace window before user can manually cancel
+        # 1. CRITICAL FINANCIAL SAFEGUARD:
+        # Check ZapOTP upstream right now to verify that SMS was not delivered while user waited
+        client = ZapOTPClient()
+        try:
+            sms_data = client.get_sms(order.provider_order_id)
+            upstream_status = str(sms_data.get('status', 'PENDING')).upper().strip()
+            sms_code = sms_data.get('sms_code')
+            full_sms = str(sms_data.get('full_sms', '')).strip()
+
+            # If SMS was delivered or marked finished by ZapOTP, DO NOT REFUND!
+            if (upstream_status in ['RECEIVED', 'FINISHED', 'SUCCESS', 'COMPLETED'] and (sms_code or full_sms)) or (sms_code and len(str(sms_code).strip()) >= 3):
+                order.status = OTPOrder.Status.RECEIVED
+                order.sms_code = str(sms_code).strip() if sms_code else (full_sms[:50] if full_sms else 'DELIVERED')
+                order.full_sms = full_sms or str(sms_code or '')
+                order.received_at = timezone.now()
+                order.save(update_fields=['status', 'sms_code', 'full_sms', 'received_at', 'updated_at'])
+
+                serializer = OTPOrderSerializer(order)
+                return Response({
+                    "status": "received",
+                    "message": "Your verification code has arrived! The order is fulfilled.",
+                    "order": serializer.data
+                }, status=status.HTTP_200_OK)
+        except Exception as check_err:
+            logger.warning(f"ZapOTP safety check before cancel order {order.id}: {check_err}")
+
+        # 2. Enforce 2-minute grace window before user can manually cancel
         time_elapsed = timezone.now() - order.created_at
         if time_elapsed.total_seconds() < 120:
             remaining = int(120 - time_elapsed.total_seconds())
@@ -349,14 +376,13 @@ class OTPOrderCancelView(APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Dispatch upstream cancellation to ZapOTP to release carrier pool
+        # 3. Dispatch upstream cancellation to ZapOTP to release carrier pool
         try:
-            client = ZapOTPClient()
             client.cancel_order(order.provider_order_id)
         except Exception as e:
             logger.warning(f"Could not cancel ZapOTP order {order.provider_order_id}: {e}")
 
-        # Mark canceled and refund 100%
+        # 4. Mark canceled and refund 100%
         order.status = OTPOrder.Status.CANCELED
         order.profit = Decimal('0.00')
         order.refunded_at = timezone.now()

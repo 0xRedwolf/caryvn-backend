@@ -304,15 +304,20 @@ def cleanup_expired_otp_orders_task():
             # Final check before refund
             try:
                 sms_data = client.get_sms(order.provider_order_id)
-                if sms_data.get('status') == 'RECEIVED' and sms_data.get('sms_code'):
+                upstream_status = str(sms_data.get('status', '')).upper().strip()
+                sms_code = sms_data.get('sms_code')
+                full_sms = str(sms_data.get('full_sms', '')).strip()
+
+                if (upstream_status in ['RECEIVED', 'FINISHED', 'SUCCESS', 'COMPLETED'] and (sms_code or full_sms)) or (sms_code and len(str(sms_code).strip()) >= 3):
                     order.status = OTPOrder.Status.RECEIVED
-                    order.sms_code = sms_data.get('sms_code')
-                    order.full_sms = sms_data.get('full_sms', '')
+                    order.sms_code = str(sms_code).strip() if sms_code else (full_sms[:50] if full_sms else 'DELIVERED')
+                    order.full_sms = full_sms or str(sms_code or '')
                     order.received_at = now
                     order.save(update_fields=['status', 'sms_code', 'full_sms', 'received_at', 'updated_at'])
                     received_count += 1
                     continue
-            except ZapOTPError:
+            except Exception as check_err:
+                logger.warning(f"ZapOTP check error on cleanup for order {order.id}: {check_err}")
                 pass  # Proceed to refund
 
             # Mark expired and refund

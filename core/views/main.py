@@ -1137,6 +1137,7 @@ class AdminOrderCancelRefundView(APIView):
     def post(self, request):
         order_ids = request.data.get('order_ids', [])
         force = bool(request.data.get('force', False))
+        refund = bool(request.data.get('refund', True))
         if not order_ids:
             return Response({'error': 'No order IDs provided'}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -1165,7 +1166,7 @@ class AdminOrderCancelRefundView(APIView):
             except Order.DoesNotExist:
                 return Response({'error': 'Order not found'}, status=status.HTTP_404_NOT_FOUND)
 
-        results = {'refunded': 0, 'skipped': 0, 'errors': []}
+        results = {'refunded': 0, 'canceled': 0, 'skipped': 0, 'errors': []}
 
         for oid in order_ids:
             try:
@@ -1189,19 +1190,23 @@ class AdminOrderCancelRefundView(APIView):
 
                 refund_amount = order.charge
                 with transaction.atomic():
-                    if not _order_has_refund(order) and refund_amount > Decimal('0'):
-                        order.user.wallet.refund(refund_amount, f'Admin refund: Order #{str(order.id)[:8]}')
+                    if refund:
+                        if not _order_has_refund(order) and refund_amount > Decimal('0'):
+                            order.user.wallet.refund(refund_amount, f'Admin refund: Order #{str(order.id)[:8]}')
+                        results['refunded'] += 1
+                    else:
+                        results['canceled'] += 1
+
                     order.status = Order.Status.CANCELED
                     order.profit = Decimal('0')
                     order.save()
-                    results['refunded'] += 1
 
                 try:
                     from ..services.email_service import email_service
                     email_service.send_order_status_email(
                         order,
-                        status_display='Canceled & Refunded',
-                        refund_amount=refund_amount
+                        status_display='Canceled & Refunded' if refund else 'Canceled',
+                        refund_amount=refund_amount if refund else Decimal('0')
                     )
                 except Exception as em_err:
                     logger.warning(f'Failed to send refund email for order {order.id}: {em_err}')
@@ -1209,13 +1214,14 @@ class AdminOrderCancelRefundView(APIView):
                 try:
                     from ..services.audit_service import log_admin_action
                     from ..models import AdminAuditLog
+                    desc = f"Admin canceled order #{str(order.id)[:8]} (₦{refund_amount} refunded) - {upstream_note}" if refund else f"Admin canceled order #{str(order.id)[:8]} (without refund) - {upstream_note}"
                     log_admin_action(
                         actor=request.user,
                         action=AdminAuditLog.Action.ORDER_STATUS_OVERRIDE,
                         target_model='Order',
                         target_id=str(order.id),
-                        description=f"Admin canceled order #{str(order.id)[:8]} (₦{refund_amount}) - {upstream_note}",
-                        changes={'status': 'canceled', 'refund_amount': str(refund_amount), 'force': force},
+                        description=desc,
+                        changes={'status': 'canceled', 'refund': refund, 'refund_amount': str(refund_amount) if refund else '0.00', 'force': force},
                         request=request
                     )
                 except Exception as audit_err:

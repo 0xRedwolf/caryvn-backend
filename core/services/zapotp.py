@@ -192,6 +192,8 @@ class ZapOTPClient:
                 "status": str ("PENDING" | "RECEIVED" | "CANCELED" | "FINISHED")
             }
         """
+        import re
+
         # Throttle cache to prevent overwhelming ZapOTP during rapid frontend polling
         cache_key = f"zapotp_sms_poll_{order_id}"
         cached_result = cache.get(cache_key)
@@ -202,9 +204,22 @@ class ZapOTPClient:
         res = self._request("GET", "sms", params=params)
         data = res.get("data", {})
 
-        status = data.get("status", "PENDING").upper()
+        status = str(data.get("status", "PENDING")).upper().strip()
         sms_code = data.get("sms_code") or data.get("code") or None
-        full_sms = data.get("sms") or data.get("full_sms") or data.get("message") or ""
+        if sms_code is not None:
+            sms_code = str(sms_code).strip()
+
+        full_sms = str(data.get("sms") or data.get("full_sms") or data.get("message") or "").strip()
+
+        # If sms_code is not provided explicitly but full_sms text has numbers, extract OTP
+        if not sms_code and full_sms:
+            match = re.search(r'\b(\d{3}[-\s]?\d{3}|\d{4,8})\b', full_sms)
+            if match:
+                sms_code = match.group(1).replace(' ', '')
+
+        # Standardize finished/delivered states: if ZapOTP marks FINISHED or SUCCESS, treat as RECEIVED
+        if status in ["FINISHED", "SUCCESS", "COMPLETED"]:
+            status = "RECEIVED"
 
         result = {
             "order_id": str(order_id),
@@ -213,18 +228,43 @@ class ZapOTPClient:
             "full_sms": full_sms,
         }
 
-        # Cache for 2.5 seconds during pending, or 10 minutes if finalized
-        cache_ttl = 600 if status in ["RECEIVED", "CANCELED", "FINISHED"] else 3
+        # Cache for 10 minutes only if finalized with code or canceled, otherwise 3 seconds
+        cache_ttl = 600 if ((status == "RECEIVED" and (sms_code or full_sms)) or status in ["CANCELED", "CANCELLED"]) else 3
         cache.set(cache_key, result, timeout=cache_ttl)
 
         return result
 
     def cancel_order(self, order_id: str) -> Dict[str, Any]:
-        """
-        Notify ZapOTP to cancel/release the virtual number early.
-        """
+        order_str = str(order_id).strip()
+        cache.delete(f"zapotp_sms_poll_{order_str}")
+        last_err = None
+
+        # Primary documented endpoint: POST /cancel
         try:
-            return self._request("POST", "rent", json_data={"action": "cancel", "order_id": str(order_id)})
+            res = self._request("POST", "cancel", json_data={"order_id": order_str})
+            if res.get("status") == "success":
+                logger.info(f"ZapOTP order {order_str} canceled successfully via /cancel: {res}")
+                return res
+        except ZapOTPError as e:
+            # If ZapOTP responded with business error (e.g. SMS already received), don't waste time on fallback
+            if "404" not in str(e):
+                logger.warning(f"ZapOTP cancel rejected by upstream business logic: {e}")
+                raise e
+            last_err = e
+            logger.warning(f"ZapOTP POST /cancel endpoint 404, trying /rent fallback...")
         except Exception as e:
-            logger.info(f"ZapOTP upstream cancel notification note: {e}")
-            return {"status": "success", "note": "Upstream cancellation notification dispatched"}
+            last_err = e
+            logger.warning(f"ZapOTP POST /cancel failed for order {order_str}: {e}, trying /rent fallback...")
+
+        # Fallback documented endpoint: POST /rent with action=cancel
+        try:
+            res = self._request("POST", "rent", json_data={"action": "cancel", "order_id": order_str})
+            if res.get("status") == "success":
+                logger.info(f"ZapOTP order {order_str} canceled successfully via /rent fallback: {res}")
+                return res
+        except Exception as e:
+            last_err = e
+            logger.warning(f"ZapOTP POST /rent fallback failed for order {order_str}: {e}")
+
+        logger.error(f"ZapOTP cancellation failed for order {order_str}: {last_err}")
+        raise ZapOTPError(f"Failed to cancel order on ZapOTP: {last_err}")

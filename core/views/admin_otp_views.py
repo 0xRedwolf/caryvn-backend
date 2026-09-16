@@ -4,6 +4,7 @@ Controls margins, API keys, balance monitoring, and global order audits.
 """
 import logging
 from decimal import Decimal
+from django.utils import timezone
 from rest_framework import status, permissions
 from rest_framework.views import APIView
 from rest_framework.response import Response
@@ -71,6 +72,29 @@ class AdminOTPOrdersView(APIView):
     permission_classes = [permissions.IsAdminUser]
 
     def get(self, request):
+        # Auto-sync up to 3 recent pending orders from ZapOTP so admin sees latest codes on page load
+        recent_pending = OTPOrder.objects.filter(
+            status=OTPOrder.Status.PENDING,
+            created_at__gte=timezone.now() - timezone.timedelta(minutes=25)
+        ).order_by('-created_at')[:3]
+
+        if recent_pending:
+            client = ZapOTPClient()
+            for p_order in recent_pending:
+                try:
+                    sms_data = client.get_sms(p_order.provider_order_id)
+                    up_status = str(sms_data.get('status', '')).upper().strip()
+                    code = sms_data.get('sms_code')
+                    f_sms = str(sms_data.get('full_sms', '')).strip()
+                    if (up_status in ['RECEIVED', 'FINISHED', 'SUCCESS', 'COMPLETED'] and (code or f_sms)) or (code and len(str(code).strip()) >= 3):
+                        p_order.status = OTPOrder.Status.RECEIVED
+                        p_order.sms_code = str(code).strip() if code else (f_sms[:50] if f_sms else 'DELIVERED')
+                        p_order.full_sms = f_sms or str(code or '')
+                        p_order.received_at = timezone.now()
+                        p_order.save(update_fields=['status', 'sms_code', 'full_sms', 'received_at', 'updated_at'])
+                except Exception:
+                    pass
+
         queryset = OTPOrder.objects.select_related('user').all().order_by('-created_at')
 
         # Filters
@@ -111,3 +135,189 @@ class AdminOTPOrdersView(APIView):
             "total_profit": float(total_profit)
         }
         return response
+
+
+class AdminOTPSyncOrderView(APIView):
+    """
+    POST /api/admin/otp/orders/<uuid:pk>/sync/
+    Superadmin forces a real-time status check and OTP sync from ZapOTP.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, pk):
+        from django.utils import timezone
+        try:
+            order = OTPOrder.objects.get(pk=pk)
+        except OTPOrder.DoesNotExist:
+            return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        client = ZapOTPClient()
+        try:
+            sms_data = client.get_sms(order.provider_order_id)
+        except Exception as e:
+            return Response({"detail": f"ZapOTP query failed: {e}"}, status=status.HTTP_502_BAD_GATEWAY)
+
+        upstream_status = str(sms_data.get('status', 'PENDING')).upper().strip()
+        sms_code = sms_data.get('sms_code')
+        full_sms = str(sms_data.get('full_sms', '')).strip()
+
+        updated = False
+        if (upstream_status in ['RECEIVED', 'FINISHED', 'SUCCESS', 'COMPLETED'] and (sms_code or full_sms)) or (sms_code and len(str(sms_code).strip()) >= 3):
+            order.status = OTPOrder.Status.RECEIVED
+            order.sms_code = str(sms_code).strip() if sms_code else (full_sms[:50] if full_sms else 'DELIVERED')
+            order.full_sms = full_sms or str(sms_code or '')
+            order.received_at = timezone.now()
+            order.save(update_fields=['status', 'sms_code', 'full_sms', 'received_at', 'updated_at'])
+            updated = True
+        elif upstream_status in ['CANCELED', 'CANCELLED'] and not sms_code:
+            if order.status != OTPOrder.Status.CANCELED:
+                order.status = OTPOrder.Status.CANCELED
+                order.profit = Decimal('0.00')
+                order.refunded_at = timezone.now()
+                order.save(update_fields=['status', 'profit', 'refunded_at', 'updated_at'])
+                order.user.wallet.refund(
+                    order.user_charge,
+                    description=f"Provider Cancel: {order.service_name} ({order.phone_number})"
+                )
+                updated = True
+
+        serializer = OTPOrderAdminSerializer(order)
+        msg = f"Synced with ZapOTP: Status is '{order.status}'"
+        if order.sms_code:
+            msg += f" (Code: {order.sms_code})"
+        return Response({
+            "status": "success",
+            "message": msg,
+            "order": serializer.data,
+            "updated": updated
+        })
+
+
+class AdminOTPCancelRefundView(APIView):
+    """
+    POST /api/admin/otp/orders/<uuid:pk>/cancel/
+    Superadmin cancels order and refunds user.
+    Body: {"force": bool}
+    If force=False: queries ZapOTP first. If ZapOTP delivered the code, rejects cancellation.
+    If force=True: admin override, proceeds with cancel & refund regardless.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, pk):
+        from django.utils import timezone
+        try:
+            order = OTPOrder.objects.get(pk=pk)
+        except OTPOrder.DoesNotExist:
+            return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        if order.status in [OTPOrder.Status.CANCELED, OTPOrder.Status.REFUNDED, OTPOrder.Status.EXPIRED]:
+            return Response({"detail": f"Order is already in '{order.status}' status."}, status=status.HTTP_400_BAD_REQUEST)
+
+        force = bool(request.data.get('force', False))
+        refund = bool(request.data.get('refund', True))
+
+        if not force:
+            # Check upstream ZapOTP first
+            client = ZapOTPClient()
+            try:
+                sms_data = client.get_sms(order.provider_order_id)
+                upstream_status = str(sms_data.get('status', '')).upper().strip()
+                sms_code = sms_data.get('sms_code')
+                full_sms = str(sms_data.get('full_sms', '')).strip()
+
+                if (upstream_status in ['RECEIVED', 'FINISHED', 'SUCCESS', 'COMPLETED'] and (sms_code or full_sms)) or (sms_code and len(str(sms_code).strip()) >= 3):
+                    order.status = OTPOrder.Status.RECEIVED
+                    order.sms_code = str(sms_code).strip() if sms_code else (full_sms[:50] if full_sms else 'DELIVERED')
+                    order.full_sms = full_sms or str(sms_code or '')
+                    order.received_at = timezone.now()
+                    order.save(update_fields=['status', 'sms_code', 'full_sms', 'received_at', 'updated_at'])
+                    serializer = OTPOrderAdminSerializer(order)
+                    return Response({
+                        "detail": f"Upstream ZapOTP already fulfilled this order (Status: {upstream_status}, Code: {order.sms_code}). Standard cancel rejected to prevent financial loss. Use Force Cancel if you still want to cancel.",
+                        "fulfilled": True,
+                        "order": serializer.data
+                    }, status=status.HTTP_400_BAD_REQUEST)
+            except Exception as e:
+                logger.warning(f"ZapOTP check warning during admin cancel: {e}")
+
+        # Attempt to notify ZapOTP
+        try:
+            client = ZapOTPClient()
+            client.cancel_order(order.provider_order_id)
+        except Exception:
+            pass
+
+        # Execute cancellation
+        order.status = OTPOrder.Status.CANCELED
+        order.profit = Decimal('0.00')
+        if refund:
+            order.refunded_at = timezone.now()
+            order.save(update_fields=['status', 'profit', 'refunded_at', 'updated_at'])
+            order.user.wallet.refund(
+                order.user_charge,
+                description=f"Admin Cancel & Refund: {order.service_name} ({order.phone_number})"
+            )
+            msg = f"Order #{str(order.id)[:8].upper()} canceled and ₦{float(order.user_charge):,.2f} refunded to {order.user.email}."
+        else:
+            order.save(update_fields=['status', 'profit', 'updated_at'])
+            msg = f"Order #{str(order.id)[:8].upper()} canceled without refund."
+
+        serializer = OTPOrderAdminSerializer(order)
+        return Response({
+            "status": "success",
+            "message": msg,
+            "order": serializer.data
+        })
+
+
+class AdminOTPCompleteOrderView(APIView):
+    """
+    POST /api/admin/otp/orders/<uuid:pk>/complete/
+    Superadmin forces order to completed (RECEIVED) state, optionally providing an SMS code.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def post(self, request, pk):
+        from django.utils import timezone
+        try:
+            order = OTPOrder.objects.get(pk=pk)
+        except OTPOrder.DoesNotExist:
+            return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        code = request.data.get('sms_code')
+        order.status = OTPOrder.Status.RECEIVED
+        if code:
+            order.sms_code = str(code).strip()
+        elif not order.sms_code:
+            order.sms_code = 'DELIVERED'
+        order.received_at = timezone.now()
+        order.save(update_fields=['status', 'sms_code', 'received_at', 'updated_at'])
+
+        serializer = OTPOrderAdminSerializer(order)
+        return Response({
+            "status": "success",
+            "message": f"Order #{str(order.id)[:8].upper()} marked as completed.",
+            "order": serializer.data
+        })
+
+
+class AdminOTPDeleteOrderView(APIView):
+    """
+    DELETE /api/admin/otp/orders/<uuid:pk>/
+    Superadmin permanently deletes an OTP order record.
+    """
+    permission_classes = [permissions.IsAdminUser]
+
+    def delete(self, request, pk):
+        try:
+            order = OTPOrder.objects.get(pk=pk)
+        except OTPOrder.DoesNotExist:
+            return Response({"detail": "Order not found."}, status=status.HTTP_404_NOT_FOUND)
+
+        order_id_str = str(order.id)[:8].upper()
+        order.delete()
+        return Response({
+            "status": "success",
+            "message": f"Order #{order_id_str} deleted successfully."
+        })
+
