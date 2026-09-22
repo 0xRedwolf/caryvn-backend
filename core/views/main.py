@@ -489,7 +489,7 @@ class OrderRefillView(APIView):
 
 class OrderCheckProviderBalanceView(APIView):
     """Silently check if the provider has enough balance to fulfill an order."""
-    permission_classes = [permissions.IsAdminUser]
+    permission_classes = [permissions.IsAuthenticated]
     def post(self, request):
         from decimal import Decimal
         try:
