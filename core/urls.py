@@ -42,7 +42,7 @@ from .views.payment_views import (
 )
 from .views.blog_views import (
     PublicBlogListView, PublicBlogDetailView, PublicBlogCategoriesView, PublicBlogAuthorsView,
-    AdminBlogPostListCreateView, AdminBlogPostDetailView, AdminBlogImageUploadView,
+    AdminBlogPostListCreateView, AdminBlogPostDetailView, AdminBlogImageUploadView, AdminBlogVideoUploadView,
     AdminBlogAuthorListCreateView, AdminBlogAuthorDetailView,
     AdminBlogCategoryListCreateView, AdminBlogCategoryDetailView
 )
@@ -190,6 +190,7 @@ urlpatterns = [
     path('admin/blog/posts/', AdminBlogPostListCreateView.as_view(), name='admin-blog-posts'),
     path('admin/blog/posts/<uuid:pk>/', AdminBlogPostDetailView.as_view(), name='admin-blog-post-detail'),
     path('admin/blog/upload-image/', AdminBlogImageUploadView.as_view(), name='admin-blog-upload-image'),
+    path('admin/blog/upload-video/', AdminBlogVideoUploadView.as_view(), name='admin-blog-upload-video'),
     path('admin/blog/authors/', AdminBlogAuthorListCreateView.as_view(), name='admin-blog-authors'),
     path('admin/blog/authors/<uuid:pk>/', AdminBlogAuthorDetailView.as_view(), name='admin-blog-author-detail'),
     path('admin/blog/categories/', AdminBlogCategoryListCreateView.as_view(), name='admin-blog-categories'),

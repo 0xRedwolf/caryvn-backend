@@ -4,6 +4,7 @@ Supports both public cached read-only APIs and authenticated Admin CRUD APIs.
 """
 import logging
 from django.db.models import F, Q
+from django.utils import timezone
 from django.utils.text import slugify
 from rest_framework import status
 from rest_framework.views import APIView
@@ -234,6 +235,11 @@ class AdminBlogPostDetailView(APIView):
             return Response({'error': 'Post not found'}, status=status.HTTP_404_NOT_FOUND)
 
         data = request.data.copy()
+        
+        # Check transition from DRAFT to PUBLISHED
+        new_status = data.get('status')
+        transition_to_published = (post.status == BlogPost.Status.DRAFT and new_status == BlogPost.Status.PUBLISHED)
+
         serializer = BlogPostDetailSerializer(post, data=data, partial=True)
         if serializer.is_valid():
             author_id = data.get('author_id')
@@ -244,6 +250,9 @@ class AdminBlogPostDetailView(APIView):
                 update_kwargs['author'] = BlogAuthor.objects.filter(id=author_id).first() if author_id else None
             if 'category_id' in data:
                 update_kwargs['category'] = BlogCategory.objects.filter(id=category_id).first() if category_id else None
+
+            if transition_to_published and not data.get('published_at'):
+                update_kwargs['published_at'] = timezone.now()
 
             updated_post = serializer.save(**update_kwargs)
             return Response(BlogPostDetailSerializer(updated_post).data)
@@ -279,6 +288,32 @@ class AdminBlogImageUploadView(APIView):
             }, status=status.HTTP_201_CREATED)
         except Exception as e:
             logger.error(f"Image upload error: {e}")
+            return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+
+
+class AdminBlogVideoUploadView(APIView):
+    """
+    Upload direct video to Cloudinary CDN (or local media fallback).
+    """
+    permission_classes = [IsAdminUser]
+    parser_classes = [MultiPartParser, FormParser]
+
+    def post(self, request):
+        file_obj = request.FILES.get('video') or request.FILES.get('file')
+        if not file_obj:
+            return Response({'error': 'No video file provided'}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            upload_result = cloudinary_service.upload_video(file_obj, folder='caryvn_blog_videos')
+            return Response({
+                'url': upload_result['url'],
+                'poster_url': upload_result.get('poster_url', ''),
+                'public_id': upload_result.get('public_id', ''),
+                'duration': upload_result.get('duration', 0),
+                'is_cloud': upload_result.get('is_cloud', False),
+            }, status=status.HTTP_201_CREATED)
+        except Exception as e:
+            logger.error(f"Video upload error: {e}")
             return Response({'error': str(e)}, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 

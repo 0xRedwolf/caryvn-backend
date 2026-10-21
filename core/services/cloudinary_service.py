@@ -86,5 +86,47 @@ class CloudinaryService:
             'is_cloud': False,
         }
 
+    def upload_video(self, file_obj, folder: str = 'caryvn_blog_videos') -> dict:
+        """
+        Upload a video file object to Cloudinary with video transcoding.
+        Falls back to local media storage if Cloudinary is not configured.
+        """
+        if self.is_configured and CLOUDINARY_AVAILABLE:
+            try:
+                upload_res = cloudinary.uploader.upload(
+                    file_obj,
+                    folder=folder,
+                    use_filename=True,
+                    unique_filename=True,
+                    resource_type='video',
+                )
+                secure_url = upload_res.get('secure_url') or upload_res.get('url')
+                # Cloudinary automatically creates a poster image by changing extension to .jpg
+                poster_url = secure_url.rsplit('.', 1)[0] + '.jpg' if '.' in secure_url else ''
+                return {
+                    'url': secure_url,
+                    'poster_url': poster_url,
+                    'public_id': upload_res.get('public_id', ''),
+                    'duration': upload_res.get('duration', 0),
+                    'format': upload_res.get('format', 'mp4'),
+                    'bytes': upload_res.get('bytes', 0),
+                    'is_cloud': True,
+                }
+            except Exception as e:
+                logger.error(f'Cloudinary video upload failed, falling back to local storage: {e}')
+
+        # Fallback to local media storage
+        ext = os.path.splitext(getattr(file_obj, 'name', 'video.mp4'))[1].lower() or '.mp4'
+        filename = f'blog/videos/{uuid.uuid4().hex}{ext}'
+        saved_path = default_storage.save(filename, ContentFile(file_obj.read()))
+        local_url = f'{settings.MEDIA_URL.rstrip("/")}/{saved_path.lstrip("/")}'
+
+        return {
+            'url': local_url,
+            'poster_url': '',
+            'public_id': saved_path,
+            'is_cloud': False,
+        }
+
 
 cloudinary_service = CloudinaryService()
